@@ -4,8 +4,17 @@
 #include <string>
 #include <sstream> // stringstream
 #include <iomanip> // setprecision
+#include <vector>
 
 using Price = double;
+
+
+// K線
+struct CandleStick{
+    std::string timestamp;
+    double open, low, high, close;
+    unsigned long long int volume;
+};
 
 
 // 回傳股價的 stirng
@@ -36,15 +45,7 @@ public:
     // 2. 解構子 (Destructor) - 負責 cleanup
     ~MarketDataFetcher();
 
-    // 3. 主要功能：輸入代號，回傳價格
-    // (試試看寫出這個宣告)
-    Stock getPrice(const std::string& stockSymbol);
-    
-
-private:
-    // 4. 藏起來的 CURL handle
-    // (試試看宣告這個變數)
-    void* curl;
+    std::vector<CandleStick> loadHistoryFromCSV(const std::string& filename);
 };
 
 #endif // MARKET_DATA_FETCHER_H
