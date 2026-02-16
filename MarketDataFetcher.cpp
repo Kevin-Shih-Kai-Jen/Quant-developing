@@ -31,7 +31,7 @@ std::vector<CandleStick> MarketDataFetcher::loadHistoryFromCSV(const std::string
 
         try {
             // 1. 日期 (字串)
-            if (!std::getline(ss, kline.timestamp, ',')) continue; // 如果連日期都沒有，這行直接跳過
+            if (!std::getline(ss, kline.date, ',')) continue; // 如果連日期都沒有，這行直接跳過
 
             // 2. 價格 (Double) - 遇到空值會丟出例外，被 catch 接住
             std::getline(ss, temp, ','); kline.open = std::stod(temp);
