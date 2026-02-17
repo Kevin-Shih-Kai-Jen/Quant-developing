@@ -8,8 +8,7 @@ public:
     BacktestEngine() = default;
     ~BacktestEngine() = default;
     
-    static BacktestResult Run(const std::vector<TradeSignal>& data, double initial_money, double curr_stock_price);
+    static BacktestResult Run(const std::vector<TradeSignal>& data, double initial_money, double curr_stock_price, requirePrint require_print = YES);
 };
-
 
 # endif

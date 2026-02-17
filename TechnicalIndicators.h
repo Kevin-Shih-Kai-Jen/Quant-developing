@@ -4,7 +4,7 @@
 #include <vector>
 #include <numeric> // 這一行一定要加，因為 std::accumulate 在這裡面
 #include <ranges>
-
+#include <deque>
 
 class TechnicalIndicators {
 public:
@@ -130,14 +130,14 @@ public:
 
     // 計算 MACD
     // 標準參數: short_p=12, long_p=26, signal_p=9
-    static MACDResult CalculateMACD(const std::vector<double>& prices, int short_p = 12, int long_p = 26, int signal_p = 9) {
+    static MACDResult CalculateMACD(const std::vector<double>& data, int short_p = 12, int long_p = 26, int signal_p = 9) {
         MACDResult result;
 
         // 1. 計算兩條 EMA
         // ema_short (12) 長度會比較長
         // ema_long (26) 長度會比較短 <--- 這是我們的限制因素
-        std::vector<double> ema_short = CalculateEMA(short_p, prices);
-        std::vector<double> ema_long = CalculateEMA(long_p, prices);
+        std::vector<double> ema_short = CalculateEMA(short_p, data);
+        std::vector<double> ema_long = CalculateEMA(long_p, data);
 
         // 基本檢查
         if (ema_long.empty()) return result;
@@ -173,6 +173,88 @@ public:
         }
 
         return result;
+    }
+
+
+    //========================= KDJ =========================//
+    static KdjResult CalculateKDJ(const std::vector<double>& data, int RSV_N, int K_N, int D_N){
+        KdjResult KDJ;
+        std::deque<double> max_dq, min_dq;
+        
+        //=============================== Initial Update ===============================//
+        // Update untill it reaches RSV_N --> Using sliding window monotonic deque
+        for (int i = 0; i < RSV_N - 1; i++){
+            //===================== Max dq =====================//
+            while (!max_dq.empty() && data[i] >= data[max_dq.back()])
+            {
+                max_dq.pop_back();
+            }
+            max_dq.push_back(i);
+            
+            //===================== Min dq =====================//
+            while (!min_dq.empty() && data[i] <= data[min_dq.back()])
+            {
+                min_dq.pop_back();
+            }
+            min_dq.push_back(i);
+
+            // Filler
+            KDJ.kValues.push_back(50);
+            KDJ.dValues.push_back(50);
+            KDJ.jValues.push_back(50);
+        }
+
+        //=============================== Update KDJ ===============================//
+        for (int i = RSV_N - 1; i < data.size(); i++){
+
+            //============================ Get max and min value  ============================//
+            //===================== Max dq =====================//
+            while (!max_dq.empty() && data[i] >= data[max_dq.back()])
+            {
+                max_dq.pop_back();
+            }
+            max_dq.push_back(i);
+
+            //===================== Min dq =====================//
+            while (!min_dq.empty() && data[i] <= data[min_dq.back()])
+                {
+                    min_dq.pop_back();
+                }
+                min_dq.push_back(i);
+            
+
+            // Remove the first element
+            if (max_dq.front() <= i - RSV_N){
+                max_dq.pop_front();
+            }
+            
+            if (min_dq.front() <= i - RSV_N){
+                min_dq.pop_front();
+            }    
+                            
+            //====================================================================================//
+            //============================ RSV ============================//
+            double max = data[max_dq.front()];
+            double min = data[min_dq.front()];
+            double RSV = 50;
+            
+            if (max - min != 0){
+                RSV = (data[i] - min) / (max - min) * 100;
+            }
+            
+            // ✨ 加入防呆檢查 ✨
+            double prev_k = KDJ.kValues.empty() ? 50.0 : KDJ.kValues.back();
+            double prev_d = KDJ.dValues.empty() ? 50.0 : KDJ.dValues.back();
+
+            double k_val = ((K_N - 1)/ (double) K_N) * prev_k + (1.0/K_N) * RSV;
+            double d_val = ((D_N - 1) / (double) D_N) * prev_d + (1.0/D_N) * k_val;
+            double j_val = k_val + 2 * (k_val - d_val);
+
+            KDJ.kValues.push_back(k_val);
+            KDJ.dValues.push_back(d_val);
+            KDJ.jValues.push_back(j_val);
+        }
+        return KDJ;
     }
 };
 

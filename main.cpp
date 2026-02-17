@@ -29,39 +29,12 @@ bool runPythonDownloader() {
 }
 
 
-// 2. 修改函式輸入，改收 PriceType
-std::vector<double> getSpecificDataSets(const std::vector<CandleStick>& history, PriceType type) {
-    std::vector<double> dataVector;
-
-    // 3. 使用 switch-case 取代 if-else，這是 C++ 的標準寫法
-    switch (type) {
-        case PriceType::Open:
-            for (const auto& k : history) dataVector.push_back(k.open);
-            break;
-        case PriceType::High:
-            for (const auto& k : history) dataVector.push_back(k.high);
-            break;
-        case PriceType::Low:
-            for (const auto& k : history) dataVector.push_back(k.low);
-            break;
-        case PriceType::Close:
-            for (const auto& k : history) dataVector.push_back(k.close);
-            break;
-        case PriceType::Volume:
-            for (const auto& k : history) dataVector.push_back(k.volume);
-            break;
-    }
-
-    return dataVector;
-}
-
-
 // --- 主程式 ---
 // ... (保留之前的 include 和 runPythonDownloader)
 
 int main() {
     // 1. 下載並讀取資料
-    // if (!runPythonDownloader()) return 1;
+    if (!runPythonDownloader()) return 1;
 
     MarketDataFetcher fetcher;
     std::vector<CandleStick> history = fetcher.loadHistoryFromCSV("stock_data.csv");
@@ -82,19 +55,33 @@ int main() {
 
 
    // MACD
-   MACDResult macd = TechnicalIndicators::CalculateMACD(closePrices);
+   std::vector<double> volumns = getSpecificDataSets(history, PriceType::Volume);
+   MACDResult macd = TechnicalIndicators::CalculateMACD(volumns);
    printMACD(history, macd);
 
 
    // Trading Strategy
-    MacdStrategy strategy(12, 26, 9);
+    MacdStrategy macd_strategy(12, 26, 9);
     
     // 3. 執行分析
-    std::vector<TradeSignal> trade_signal = strategy.Analyze(history);
+    std::vector<TradeSignal> macd_trade_signal = macd_strategy.Analyze(history);
     
     // 4. ★ 呼叫剛剛寫好的 Print 函式 ★
-    PrintTradeSignals(trade_signal);
+    PrintTradeSignals(macd_trade_signal);
 
-    BacktestResult back_test_result = BacktestEngine::Run(trade_signal, 100000, history[0].close);
-    PrintBacktestResult(back_test_result);
+    BacktestResult macd_back_test_result = BacktestEngine::Run(macd_trade_signal, 100000, history[0].close);
+    PrintBacktestResult(macd_back_test_result);
+
+
+    // 透過回測找到最棒的 KDJ 參數
+    bestKDJn kdj_params = KDJstrategy::FindBestParameters(history);
+
+    
+    // KDJ 的 Backtest
+    KDJstrategy kdj_strategy(9, 3, 3);
+    std::vector<TradeSignal> kdj_trade_signal = kdj_strategy.Analyze(history);
+    PrintTradeSignals(kdj_trade_signal);
+
+    BacktestResult kdj_back_test_result = BacktestEngine::Run(kdj_trade_signal, 100000, history[0].close);
+    PrintBacktestResult(kdj_back_test_result);
 }

@@ -3,18 +3,21 @@
 #include "BacktestEngine.h"
 
 
-BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, double initial_money, double curr_stock_price) {
+BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, double initial_money, double curr_stock_price, requirePrint require_print) {
     BacktestResult result;
     // 初始化結果，避免垃圾值
     result.TotalProfit = 0.0;
     result.TotalTrades = 0;
     result.WinRate = 0.0;
+    result.remaining_stock = 0.0;
 
     double cash = initial_money;
     std::deque<double> stock_inventory; // 庫存成本隊列
     int win_trades = 0; // 賺錢的次數
 
-    std::cout << "========== 開始回測 ==========" << std::endl;
+    if (require_print == requirePrint::YES){
+        std::cout << "========== 開始回測 ==========" << std::endl;
+    }
 
     for (const auto& sig : signals) {
         switch (sig.type) {
@@ -30,15 +33,21 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
                 // 執行買入
                 stock_inventory.push_back(sig.price); // 紀錄成本
                 cash -= sig.price;
+                result.remaining_stock += 1;
                 
                 // 注意：買入時我們先不增加 TotalTrades，等賣出才算完成一筆交易
-                std::cout << "[買入] " << sig.date << " @ " << sig.price << std::endl;
+                if (require_print == requirePrint::YES){
+                    std::cout << "[買入] " << sig.date << " @ " << sig.price << std::endl;
+                }
+                
                 break;
             }
             case SignalType::SELL: {
                 // 檢查是否有庫存可賣
                 if (stock_inventory.empty()) {
-                    std::cout << "[忽略] 賣出訊號忽略 (無庫存) | 日期: " << sig.date << std::endl;
+                    if (require_print == requirePrint::YES){
+                        std::cout << "[忽略] 賣出訊號忽略 (無庫存) | 日期: " << sig.date << std::endl;
+                    }
                     break;
                 }    
 
@@ -48,6 +57,7 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
                 
                 cash += sig.price;
                 double profit = sig.price - buy_cost;
+                result.remaining_stock -= 1;
 
                 // 判斷勝負
                 if (profit > 0) {
@@ -57,9 +67,11 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
                 // 完成一次完整交易 (一買一賣)，次數 +1
                 result.TotalTrades++;
 
-                std::cout << "[賣出] " << sig.date << " @ " << sig.price 
-                          << " | 成本: " << buy_cost 
-                          << " | 損益: " << profit << std::endl;
+                if (require_print == requirePrint::YES){
+                    std::cout << "[賣出] " << sig.date << " @ " << sig.price 
+                            << " | 成本: " << buy_cost 
+                            << " | 損益: " << profit << std::endl;
+                }
                 break;
             }
             case SignalType::HOLD:
@@ -68,7 +80,9 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
         }
     }
 
-    std::cout << "========== 回測結束 ==========" << std::endl;
+    if (require_print == requirePrint::YES){
+        std::cout << "========== 回測結束 ==========" << std::endl;
+    }
 
     // 計算總資產 (現金 + 剩餘股票市值) - 初始本金
     double remaining_stock_value = stock_inventory.size() * curr_stock_price;

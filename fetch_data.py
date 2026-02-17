@@ -7,7 +7,7 @@ def download_data(symbol, filename):
     
     # 下載最近 1 個月的日線資料
     # auto_adjust=True 會幫我們處理除權息的問題，這對回測很重要
-    df = yf.download(symbol, period="1y", interval="1d", auto_adjust=True)
+    df = yf.download(symbol, period="3y", interval="1d", auto_adjust=True)
     
     # 檢查有沒有下載到
     if df.empty:
@@ -24,4 +24,4 @@ def download_data(symbol, filename):
 
 if __name__ == "__main__":
     # 你可以在這裡改股票代號
-    download_data("2330.TW", "stock_data.csv")
+    download_data("8027.TWO", "stock_data.csv")

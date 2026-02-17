@@ -6,6 +6,7 @@
 #include<iomanip>
 #include<sstream>
 #include<vector>
+#include<limits>
 
 enum class SignalType {
     HOLD = 0,
@@ -32,6 +33,7 @@ struct TradeSignal {
     double macd_dif;     // 快線
     double macd_dea;     // 慢線
     double macd_hist;    // histogram （柱狀圖）
+    double kVal, dVal, jVal;
 };
 
 
@@ -71,10 +73,67 @@ struct MACDResult {
 };
 
 
+struct KdjResult{
+    std::vector<double> kValues;
+    std::vector<double> dValues;
+    std::vector<double> jValues;
+};
+
+
+struct bestKDJn{
+    int RSV_N = 1;
+    int K_N = 1;
+    int D_N = 1;
+};
+
 struct BacktestResult{
     double TotalProfit;
     int TotalTrades;
     double WinRate;
+    int remaining_stock;
+};
+
+
+//============================================ 輔助函式 ============================================//
+// 2. 修改函式輸入，改收 PriceType
+inline std::vector<double> getSpecificDataSets(const std::vector<CandleStick>& history, PriceType type) {
+    std::vector<double> dataVector;
+
+    // 3. 使用 switch-case 取代 if-else，這是 C++ 的標準寫法
+    switch (type) {
+        case PriceType::Open:
+            for (const auto& k : history) dataVector.push_back(k.open);
+            break;
+        case PriceType::High:
+            for (const auto& k : history) dataVector.push_back(k.high);
+            break;
+        case PriceType::Low:
+            for (const auto& k : history) dataVector.push_back(k.low);
+            break;
+        case PriceType::Close:
+            for (const auto& k : history) dataVector.push_back(k.close);
+            break;
+        case PriceType::Volume:
+            for (const auto& k : history) dataVector.push_back(k.volume);
+            break;
+    }
+
+    return dataVector;
+}
+
+
+// 只拿 dates
+inline std::vector<std::string> getDateData(const std::vector<CandleStick>& history) {
+    std::vector<std::string> dateVector;
+    for (const auto& k : history) dateVector.push_back(k.date);
+    return dateVector;
+}
+
+
+// 不然 RUN 一直跑出訊息太多了
+enum requirePrint{
+    YES,
+    NO
 };
 
 #endif
