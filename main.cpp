@@ -39,49 +39,8 @@ int main() {
     MarketDataFetcher fetcher;
     std::vector<CandleStick> history = fetcher.loadHistoryFromCSV("stock_data.csv");
     
-    // 2. 計算 5日 SMA (使用 Close 收盤價)
-    std::cout << "📈 正在計算技術指標..." << std::endl;
-    std::vector<double> closePrices = getSpecificDataSets(history, PriceType::Close);
-    std::vector<double> sma5 = TechnicalIndicators::CalculateSMA(5, closePrices);
-    std::vector<double> sma20 = TechnicalIndicators::CalculateSMA(20, closePrices);
-
-    // 3. 使用新函式列印結果
-    printTechnicalIndicator(history, sma5, "5日均線 (SMA5)", 5);
-    printTechnicalIndicator(history, sma20, "20日均線 (SMA20)", 5);
-
-    // 4. 計算 5日 RSI (使用 Close 收盤價)
-    std::vector<double> rsi5 = TechnicalIndicators::CalculateRSI(5, closePrices);
-    printRSI(history, rsi5, 5, 10);
-
-
-   // MACD
-   std::vector<double> volumns = getSpecificDataSets(history, PriceType::Volume);
-   MACDResult macd = TechnicalIndicators::CalculateMACD(volumns);
-   printMACD(history, macd);
-
-
-   // Trading Strategy
-    MacdStrategy macd_strategy(12, 26, 9);
-    
-    // 3. 執行分析
-    std::vector<TradeSignal> macd_trade_signal = macd_strategy.Analyze(history);
-    
-    // 4. ★ 呼叫剛剛寫好的 Print 函式 ★
-    PrintTradeSignals(macd_trade_signal);
-
-    BacktestResult macd_back_test_result = BacktestEngine::Run(macd_trade_signal, 100000, history[0].close);
-    PrintBacktestResult(macd_back_test_result);
-
-
-    // 透過回測找到最棒的 KDJ 參數
-    bestKDJn kdj_params = KDJstrategy::FindBestParameters(history);
-
-    
-    // KDJ 的 Backtest
-    KDJstrategy kdj_strategy(9, 3, 3);
-    std::vector<TradeSignal> kdj_trade_signal = kdj_strategy.Analyze(history);
-    PrintTradeSignals(kdj_trade_signal);
-
-    BacktestResult kdj_back_test_result = BacktestEngine::Run(kdj_trade_signal, 100000, history[0].close);
-    PrintBacktestResult(kdj_back_test_result);
+    MixedStrategy strategy_1;
+    std::vector<TradeSignal> test = strategy_1.Analyze(history);
+    BacktestResult back_test = BacktestEngine::Run(test, 100000, history.back().close, requirePrint::YES);
+    PrintBacktestResult(back_test);
 }

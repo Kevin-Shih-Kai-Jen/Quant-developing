@@ -7,6 +7,8 @@
 #include<sstream>
 #include<vector>
 #include<limits>
+#include <set>
+
 
 enum class SignalType {
     HOLD = 0,
@@ -91,6 +93,13 @@ struct BacktestResult{
     int TotalTrades;
     double WinRate;
     int remaining_stock;
+    double ROI;
+};
+
+
+struct BBandResult{
+    std::vector<double> middleBand, upperBand, lowerBand;
+    std::vector<double> standardDeviation;
 };
 
 
@@ -134,6 +143,11 @@ inline std::vector<std::string> getDateData(const std::vector<CandleStick>& hist
 enum requirePrint{
     YES,
     NO
+};
+
+
+struct Crosses{
+    std::set<int> golden_cross, death_cross;
 };
 
 #endif

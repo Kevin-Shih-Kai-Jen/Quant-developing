@@ -38,4 +38,12 @@ public:
 };
 
 
+class MixedStrategy: public Strategy{
+public:
+    MixedStrategy() = default;
+    ~MixedStrategy() = default;
+    std::vector<TradeSignal> Analyze(const std::vector<CandleStick>& data) override;
+};
+
+
 #endif

@@ -1,99 +1,129 @@
 #ifndef TECHNICAL_INDICATORS_H
 #define TECHNICAL_INDICATORS_H
 
-#include <vector>
 #include <numeric> // 這一行一定要加，因為 std::accumulate 在這裡面
+#include <limits>
+#include <cmath>
 #include <ranges>
 #include <deque>
+#include <algorithm>
+
+#include "DataStructures.h"
 
 class TechnicalIndicators {
 public:
     // 加上 static，讓它變成靜態工具函式
-    template<typename T>
-    static std::vector<double> CalculateSMA(int period, const std::vector<T>& numbers) {
-        double window_sum;
-        std::vector<double> SMA;
+template<typename T>
+static std::vector<double> CalculateSMA(int period, const std::vector<T>& data, int start_index, int end_index) {
+    // 1. 基本防呆機制
+    // 若週期無效、資料為空、起始點小於 0，或起始大於結束，直接回傳空陣列
+    if (period <= 0 || data.empty() || start_index < 0 || end_index < start_index || start_index >= data.size()) {
+        return {}; 
+    }
 
-        // 1. 檢查資料長度
-        if (numbers.size() < period) {
-            return SMA;
-        }
-        
-        // 2. 初始視窗總和 (First Window)
-        window_sum = std::accumulate(numbers.begin(), numbers.begin() + period, 0.0);
-        SMA.push_back(window_sum / period);
-        
-        // 3. 滑動視窗 (Sliding Window)
-        for (size_t i = period; i < numbers.size(); i++) {
-            // 修正了這裡的 typo，並改用 [] 存取運算子
-            window_sum = window_sum - numbers[i - period] + numbers[i];
+    // 確保 end_index 不會超出 data 的實際邊界
+    end_index = std::min(end_index, static_cast<int>(data.size() - 1));
 
-            SMA.push_back(window_sum / period);
-        }
-        
+    // 2. 找出真正能開始計算 SMA 的起點
+    // 要算 SMA，當下 index 必須至少要有 period 個資料 (即 index >= period - 1)
+    int actual_calc_start = std::max(start_index, period - 1);
+
+    // 3. 初始化結果陣列 (對齊資料的關鍵)
+    // 建立大小為 end_index + 1 的陣列，預設全部填滿 NaN
+    // 這樣 SMA[i] 的 index 會跟 data[i] 完美對齊
+    std::vector<double> SMA(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+    // 如果指定的區間完全無法算出任何 SMA (例如資料不夠長)，直接回傳滿是 NaN 的陣列
+    if (actual_calc_start > end_index) {
         return SMA;
     }
 
+    // 4. 計算第一個有效視窗的總和
+    double window_sum = 0.0;
+    // 往前推算 period 個元素，累加到 actual_calc_start
+    for (int i = actual_calc_start - period + 1; i <= actual_calc_start; ++i) {
+        window_sum += static_cast<double>(data[i]); // 轉型 double 避免 T 為整數時溢位或捨去
+    }
+    
+    // 紀錄第一筆 SMA 數值
+    SMA[actual_calc_start] = window_sum / period;
+
+    // 5. 滑動視窗 (Sliding Window) 處理剩下的範圍
+    for (int i = actual_calc_start + 1; i <= end_index; ++i) {
+        // 減去滑出視窗的舊資料 (i - period)，加上剛進視窗的新資料 (i)
+        window_sum = window_sum - static_cast<double>(data[i - period]) + static_cast<double>(data[i]);
+        SMA[i] = window_sum / period;
+    }
+
+    return SMA;
+}
 
 
     //======================================= RSI =======================================//
     template <typename T>
-    static std::vector<double> CalculateRSI(int period, const std::vector<T>& numbers){
-        std::vector<double> RSIVector;
-        
-        // period + 1 ==> Momentum: N gaps, N + 1 numbers
-        if (numbers.size() < period + 1){
-            return RSIVector;
+    static std::vector<double> CalculateRSI(int period, const std::vector<T>& numbers, int start_index, int end_index) {
+        // 1. 防呆機制：檢查週期是否有效、資料是否夠長
+        if (period <= 0 || numbers.empty() || start_index < 0 || end_index < start_index || start_index + period >= numbers.size()) {
+            return {};
         }
 
-        //================= initial RSI =========================//
-        double avg_gain = 0.0;
-        double avg_loss = 0.0;
-        double RSI = 0.0;
+        // 確保 end_index 不會超出邊界
+        end_index = std::min(end_index, static_cast<int>(numbers.size() - 1));
 
-        // Get the initial RSI
-        for (int i = 1; i < period + 1; i++){
-            double diff = numbers[i] - numbers[i - 1];
-            double curr_gain = (diff > 0) ?  diff : 0.0;
+        // 2. 對齊資料：配置好大小，預設填滿 NaN
+        std::vector<double> RSIVector(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+        // 第一個可以算出 RSI 的索引位置 (需要 period 根 K 線的價差，所以是 start + period)
+        int first_rsi_index = start_index + period;
+        if (first_rsi_index > end_index) {
+            return RSIVector; // 區間太短，算不出第一根 RSI
+        }
+
+        //================= Initial RSI (簡單平均) =========================//
+        double sum_gain = 0.0;
+        double sum_loss = 0.0;
+
+        // 收集從 start_index 到 first_rsi_index 的 period 個價差
+        for (int i = start_index + 1; i <= first_rsi_index; i++) {
+            // 轉型 double 避免無號數相減溢位
+            double diff = static_cast<double>(numbers[i]) - static_cast<double>(numbers[i - 1]); 
+            if (diff > 0) {
+                sum_gain += diff;
+            } else {
+                sum_loss -= diff; // 損失取正數
+            }
+        }
+
+        double avg_gain = sum_gain / period;
+        double avg_loss = sum_loss / period;
+
+        // 避免 0 除問題 (如果完全沒漲跌，RSI 設為 50 代表中立)
+        if (avg_gain + avg_loss == 0) {
+            RSIVector[first_rsi_index] = 50.0;
+        } else {
+            RSIVector[first_rsi_index] = 100.0 * avg_gain / (avg_gain + avg_loss);
+        }
+
+        //================= Changing RSI (平滑移動平均) =========================//
+        // 注意：這裡從 first_rsi_index + 1 開始，接續剛剛算完的地方
+        for (int i = first_rsi_index + 1; i <= end_index; i++) {
+            double diff = static_cast<double>(numbers[i]) - static_cast<double>(numbers[i - 1]);
+            double curr_gain = (diff > 0) ? diff : 0.0;
             double curr_loss = (diff < 0) ? -diff : 0.0;
 
-            avg_gain += curr_gain;
-            avg_loss += curr_loss;
-        }
-        avg_gain = avg_gain / period;
-        avg_loss = avg_loss / period;
-
-        // Avoid 0 division issue
-        if (avg_gain + avg_loss == 0){
-            RSI = 0;
-        }else{
-            RSI = 100 * avg_gain / (avg_gain + avg_loss);
-        }
-
-        RSIVector.push_back(RSI);
-
-        //================= changing RSI =========================//
-        for (int i = period + 1; i < numbers.size(); i++){
-            double diff = numbers[i] - numbers[i - 1];
-            double curr_gain = (diff > 0) ?  diff : 0.0;
-            double curr_loss = (diff < 0) ? -diff : 0.0;
-
+            // Wilder's Smoothing
             avg_gain = (avg_gain * (period - 1) + curr_gain) / period;
             avg_loss = (avg_loss * (period - 1) + curr_loss) / period;
             
-            // Avoid 0 division issue
-            if (avg_gain + avg_loss == 0){
-                RSI = 0;
-            }else{
-                RSI = 100 * avg_gain / (avg_gain + avg_loss);
+            if (avg_gain + avg_loss == 0) {
+                RSIVector[i] = 50.0; 
+            } else {
+                RSIVector[i] = 100.0 * avg_gain / (avg_gain + avg_loss);
             }
-
-            RSIVector.push_back(RSI);
         }
         
         return RSIVector;
     }
-
 
     //============================== EMA ==============================//
     // 計算 EMA (指數移動平均)
@@ -128,134 +158,257 @@ public:
     }
 
 
-    // 計算 MACD
-    // 標準參數: short_p=12, long_p=26, signal_p=9
-    static MACDResult CalculateMACD(const std::vector<double>& data, int short_p = 12, int long_p = 26, int signal_p = 9) {
+    //============================== MACD ==============================//
+    static MACDResult CalculateMACD(int short_p, int long_p, int signal_p, const std::vector<double>& data, int start_index, int end_index) {
         MACDResult result;
+        if (data.empty() || start_index < 0 || end_index < start_index || long_p <= short_p) return result;
+        end_index = std::min(end_index, static_cast<int>(data.size() - 1));
 
-        // 1. 計算兩條 EMA
-        // ema_short (12) 長度會比較長
-        // ema_long (26) 長度會比較短 <--- 這是我們的限制因素
+        // 1. 預先分配並填滿 NaN
+        result.dif.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.dea.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.histogram.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+        // DIF 要到 long_p 才有足夠資料算出第一筆
+        int actual_dif_start = std::max(start_index, long_p - 1);
+        if (actual_dif_start > end_index) return result;
+
+        // 2. 計算兩條對齊好的 EMA
         std::vector<double> ema_short = CalculateEMA(short_p, data);
         std::vector<double> ema_long = CalculateEMA(long_p, data);
 
-        // 基本檢查
-        if (ema_long.empty()) return result;
-
-        // 2. 計算 DIF (快線) = EMA_short - EMA_long
-        // 關鍵：對齊問題
-        // ema_short 的第 0 格是對應第 12 天
-        // ema_long  的第 0 格是對應第 26 天
-        // 所以 ema_short 必須「跳過」前 (26 - 12) = 14 格，才能跟 ema_long 的第 0 格對齊
-        int offset = long_p - short_p;
-
-        for (size_t i = 0; i < ema_long.size(); ++i) {
-            // ema_short[i + offset] 對應 ema_long[i]
-            double val = ema_short[i + offset] - ema_long[i];
-            result.dif.push_back(val);
+        // 3. 計算 DIF
+        for (int i = actual_dif_start; i <= end_index; ++i) {
+            result.dif[i] = ema_short[i] - ema_long[i];
         }
 
-        // 3. 計算 DEA (慢線)
-        // DEA 其實就是「DIF 的 EMA」
-        // 我們直接把剛剛算出來的 dif 丟進去 CalculateEMA 就好了！
-        result.dea = CalculateEMA(signal_p, result.dif);
+        // 4. 計算 DEA (DIF 的 EMA) 與 Histogram
+        // 因為 DIF 前面有 NaN，我們不能直接呼叫 CalculateEMA，必須手動算第一筆 DEA
+        int actual_dea_start = actual_dif_start + signal_p - 1;
+        if (actual_dea_start <= end_index) {
+            double sum = 0.0;
+            for (int i = actual_dea_start - signal_p + 1; i <= actual_dea_start; ++i) {
+                sum += result.dif[i];
+            }
+            double current_dea = sum / signal_p;
+            result.dea[actual_dea_start] = current_dea;
+            result.histogram[actual_dea_start] = result.dif[actual_dea_start] - current_dea;
 
-        // 4. 計算柱狀圖 (Histogram) = DIF - DEA
-        // 這裡又會有一次對齊問題：
-        // DIF 有很多筆，但 DEA (因為又是 EMA) 會前幾筆算不出來
-        // 所以柱狀圖的長度會被 DEA 限制住
-        int dea_offset = result.dif.size() - result.dea.size();
-
-        for (size_t i = 0; i < result.dea.size(); ++i) {
-            // 用對齊後的 DIF 減去 DEA
-            double val = result.dif[i + dea_offset] - result.dea[i];
-            result.histogram.push_back(val);
+            double k = 2.0 / (signal_p + 1.0);
+            for (int i = actual_dea_start + 1; i <= end_index; ++i) {
+                current_dea = (result.dif[i] * k) + (current_dea * (1.0 - k));
+                result.dea[i] = current_dea;
+                result.histogram[i] = result.dif[i] - current_dea;
+            }
         }
-
         return result;
     }
 
 
     //========================= KDJ =========================//
-    static KdjResult CalculateKDJ(const std::vector<double>& data, int RSV_N, int K_N, int D_N){
-        KdjResult KDJ;
-        std::deque<double> max_dq, min_dq;
+    static KdjResult CalculateKDJ(const std::vector<double>& data, int RSV_N, int K_N, int D_N, int start_index, int end_index) {
+        KdjResult result;
+        if (data.empty() || start_index < 0 || end_index < start_index || RSV_N <= 0) return result;
+        end_index = std::min(end_index, static_cast<int>(data.size() - 1));
+
+        result.kValues.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.dValues.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.jValues.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+        int actual_start = std::max(start_index, RSV_N - 1);
+        if (actual_start > end_index) return result;
+
+        std::deque<int> max_dq, min_dq;
         
-        //=============================== Initial Update ===============================//
-        // Update untill it reaches RSV_N --> Using sliding window monotonic deque
-        for (int i = 0; i < RSV_N - 1; i++){
-            //===================== Max dq =====================//
-            while (!max_dq.empty() && data[i] >= data[max_dq.back()])
-            {
-                max_dq.pop_back();
-            }
+        // 預熱 Sliding Window (填補 actual_start 前的資料)
+        for (int i = actual_start - RSV_N + 1; i < actual_start; ++i) {
+            while (!max_dq.empty() && data[i] >= data[max_dq.back()]) max_dq.pop_back();
             max_dq.push_back(i);
-            
-            //===================== Min dq =====================//
-            while (!min_dq.empty() && data[i] <= data[min_dq.back()])
-            {
-                min_dq.pop_back();
-            }
+            while (!min_dq.empty() && data[i] <= data[min_dq.back()]) min_dq.pop_back();
+            min_dq.push_back(i);
+        }
+
+        double prev_k = 50.0;
+        double prev_d = 50.0;
+
+        for (int i = actual_start; i <= end_index; ++i) {
+            // 更新 Deque
+            while (!max_dq.empty() && data[i] >= data[max_dq.back()]) max_dq.pop_back();
+            max_dq.push_back(i);
+            while (!min_dq.empty() && data[i] <= data[min_dq.back()]) min_dq.pop_back();
             min_dq.push_back(i);
 
-            // Filler
-            KDJ.kValues.push_back(50);
-            KDJ.dValues.push_back(50);
-            KDJ.jValues.push_back(50);
+            // 移除過期索引
+            if (max_dq.front() <= i - RSV_N) max_dq.pop_front();
+            if (min_dq.front() <= i - RSV_N) min_dq.pop_front();
+
+            double max_val = data[max_dq.front()];
+            double min_val = data[min_dq.front()];
+            double RSV = 50.0;
+            
+            if (max_val - min_val != 0) {
+                RSV = (data[i] - min_val) / (max_val - min_val) * 100.0;
+            }
+            
+            double k_val = ((K_N - 1) / (double)K_N) * prev_k + (1.0 / K_N) * RSV;
+            double d_val = ((D_N - 1) / (double)D_N) * prev_d + (1.0 / D_N) * k_val;
+            double j_val = 3.0 * k_val - 2.0 * d_val; // 簡化公式: K + 2(K - D) = 3K - 2D
+
+            result.kValues[i] = k_val;
+            result.dValues[i] = d_val;
+            result.jValues[i] = j_val;
+
+            prev_k = k_val;
+            prev_d = d_val;
+        }
+        return result;
+    }
+
+
+    //========================= BBand =========================//
+    static BBandResult CalculateBBand(const std::vector<double>& data, int period, int start_index, int end_index) {
+        BBandResult result;
+        if (period <= 0 || data.empty() || start_index < 0 || end_index < start_index) return result;
+        end_index = std::min(end_index, static_cast<int>(data.size() - 1));
+
+        result.upperBand.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.middleBand.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.lowerBand.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+        result.standardDeviation.assign(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+        int actual_start = std::max(start_index, period - 1);
+        if (actual_start > end_index) return result;
+
+        double window_sum = 0.0;
+        for (int i = actual_start - period + 1; i <= actual_start; ++i) {
+            window_sum += data[i];
         }
 
-        //=============================== Update KDJ ===============================//
-        for (int i = RSV_N - 1; i < data.size(); i++){
-
-            //============================ Get max and min value  ============================//
-            //===================== Max dq =====================//
-            while (!max_dq.empty() && data[i] >= data[max_dq.back()])
-            {
-                max_dq.pop_back();
+        for (int i = actual_start; i <= end_index; ++i) {
+            if (i > actual_start) {
+                window_sum = window_sum - data[i - period] + data[i];
             }
-            max_dq.push_back(i);
+            double middleBand = window_sum / period;
 
-            //===================== Min dq =====================//
-            while (!min_dq.empty() && data[i] <= data[min_dq.back()])
-                {
-                    min_dq.pop_back();
-                }
-                min_dq.push_back(i);
-            
-
-            // Remove the first element
-            if (max_dq.front() <= i - RSV_N){
-                max_dq.pop_front();
+            double sigmaSum = 0.0;
+            for (int j = 0; j < period; ++j) {
+                double x = data[i - period + 1 + j];
+                sigmaSum += std::pow(x - middleBand, 2);
             }
-            
-            if (min_dq.front() <= i - RSV_N){
-                min_dq.pop_front();
-            }    
-                            
-            //====================================================================================//
-            //============================ RSV ============================//
-            double max = data[max_dq.front()];
-            double min = data[min_dq.front()];
-            double RSV = 50;
-            
-            if (max - min != 0){
-                RSV = (data[i] - min) / (max - min) * 100;
-            }
-            
-            // ✨ 加入防呆檢查 ✨
-            double prev_k = KDJ.kValues.empty() ? 50.0 : KDJ.kValues.back();
-            double prev_d = KDJ.dValues.empty() ? 50.0 : KDJ.dValues.back();
+            double standardDeviation = std::sqrt(sigmaSum / period);
 
-            double k_val = ((K_N - 1)/ (double) K_N) * prev_k + (1.0/K_N) * RSV;
-            double d_val = ((D_N - 1) / (double) D_N) * prev_d + (1.0/D_N) * k_val;
-            double j_val = k_val + 2 * (k_val - d_val);
-
-            KDJ.kValues.push_back(k_val);
-            KDJ.dValues.push_back(d_val);
-            KDJ.jValues.push_back(j_val);
+            result.middleBand[i] = middleBand;
+            result.upperBand[i] = middleBand + 2.0 * standardDeviation;
+            result.lowerBand[i] = middleBand - 2.0 * standardDeviation;
+            result.standardDeviation[i] = standardDeviation;
         }
-        return KDJ;
+        return result;
+    }
+
+
+    //========================= ATR =========================//
+    // 轉化為回傳陣列，使其能與其他指標完美對齊
+    static std::vector<double> CalculateATR(const std::vector<CandleStick>& data, int period, int start_index, int end_index) {
+        if (period <= 0 || data.empty() || start_index < 0 || end_index < start_index) return {};
+        end_index = std::min(end_index, static_cast<int>(data.size() - 1));
+
+        std::vector<double> ATRVector(end_index + 1, std::numeric_limits<double>::quiet_NaN());
+
+        // ATR 需要先有 period 根 K 線的 TR (而第一筆 TR 需要前一天的 Close，所以索引至少為 1)
+        // 因此至少要到 index = period 才能算出第一筆完整的 ATR
+        int actual_start = std::max(start_index, period);
+        if (actual_start > end_index) return ATRVector;
+
+        auto getTR = [&data](int i) {
+            return std::max({
+                std::abs(data[i].high - data[i].low), 
+                std::abs(data[i].high - data[i - 1].close),
+                std::abs(data[i].low - data[i - 1].close)
+            });
+        };
+
+        double current_atr = 0.0;
+        // 算出第一個 ATR (簡單平均)
+        for (int i = actual_start - period + 1; i <= actual_start; ++i) {
+            current_atr += getTR(i);
+        }
+        current_atr /= period;
+        ATRVector[actual_start] = current_atr;
+
+        // 後續平滑
+        for (int i = actual_start + 1; i <= end_index; ++i) {
+            current_atr = (current_atr * (period - 1) + getTR(i)) / period;
+            ATRVector[i] = current_atr;
+        }
+
+        return ATRVector;
+    }
+
+
+    static double PercentVal(const std::vector<double>& data, int start_index, int end_index, double percent = 0.8){
+        if (start_index < 0 || end_index <= start_index || end_index >= data.size()){
+            return -1.0;
+        }
+
+        // Faster than normal iteration and more readable
+        std::vector<double> data_copy(data.begin() + start_index, data.begin() + end_index + 1);
+
+        // 乘以 (size - 1) 保證 target_index 絕對不會大於最大合法索引
+        int target_index = std::round((data_copy.size() - 1) * percent);
+
+        std::nth_element(
+            data_copy.begin(),
+            data_copy.begin() + target_index,
+            data_copy.end()
+        );
+
+        return data_copy[target_index];
     }
 };
+
+    
+static Crosses CrossLine(const std::vector<double>& value, const std::vector<double>& MA, int start_index, int end_index){
+    Crosses res;
+    if (value.empty() || MA.empty() || start_index < 0 || end_index <= start_index || end_index > value.size() || end_index > MA.size()){
+        return res;
+    }   
+
+    for (int i = start_index + 1; i < end_index; i++){
+        if (value[i - 1] < MA[i - 1] && value[i] >= MA[i]){
+            res.golden_cross.insert(i);
+        }
+
+        if (value[i - 1] >= MA[i - 1] && value[i] < MA[i]){
+            res.death_cross.insert(i);
+        }
+    }
+
+    return res;
+}
+
+
+static std::vector<double> CalculateVWAP(const std::vector<CandleStick>& data) {
+    // Approximate only due to the data constraint of yfinance
+    std::vector<double> vwap;
+    vwap.reserve(data.size());
+
+    double cumulative_tp_vol = 0.0;
+    long long cumulative_vol = 0;
+
+    for (const auto& candle : data) {
+        double typical_price = (candle.high + candle.low + candle.close) / 3.0;
+        
+        cumulative_tp_vol += typical_price * candle.volume;
+        cumulative_vol += candle.volume;
+
+        if (cumulative_vol == 0) {
+            vwap.push_back(typical_price); // 防止除以 0
+        } else {
+            vwap.push_back(cumulative_tp_vol / cumulative_vol);
+        }
+    }
+    return vwap;
+}
+
 
 #endif

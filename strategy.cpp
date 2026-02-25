@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include "strategy.h"
 #include "printResult.h"
 #include "BacktestEngine.h"
@@ -7,7 +9,7 @@ std::vector<TradeSignal> MacdStrategy::Analyze(const std::vector<CandleStick>& d
     std::vector<double> dataVector;
     for (const auto&k : data) dataVector.push_back(k.volume);
 
-    MACDResult macd = TechnicalIndicators::CalculateMACD(dataVector, FastPeriod, SlowPeriod, SignalPeriod);
+    MACDResult macd = TechnicalIndicators::CalculateMACD(FastPeriod, SlowPeriod, SignalPeriod, dataVector, 0, data.size() - 1);
     int TOTAL_OFFSET = (SlowPeriod - 1) + (SignalPeriod - 1); // minus one since the start of the day has data
     std::vector<TradeSignal> signal;
 
@@ -62,7 +64,7 @@ std::vector<TradeSignal> KDJstrategy::Analyze(const std::vector<CandleStick>& da
     std::vector<double> closePrices = getSpecificDataSets(data, PriceType::Close);
     std::vector<std::string> dates = getDateData(data);
 
-    KdjResult KDJ = TechnicalIndicators::CalculateKDJ(closePrices, rsv_n, k_n, d_n);
+    KdjResult KDJ = TechnicalIndicators::CalculateKDJ(closePrices, rsv_n, k_n, d_n, 0, data.size() - 1);
 
     for (int i = 1; i < data.size(); i++){
         //Buy
@@ -136,4 +138,90 @@ bestKDJn KDJstrategy::FindBestParameters(const std::vector<CandleStick>& data) {
 
 
     return bestParam;    
+}
+
+
+std::vector<TradeSignal> MixedStrategy::Analyze(const std::vector<CandleStick>& data) {
+    std::vector<TradeSignal> trade_signal;
+    if (data.size() < 243) return trade_signal; // 確保有足夠年線資料
+
+    // 取得資料
+    std::vector<double> closePrices = getSpecificDataSets(data, PriceType::Close);
+    std::vector<double> volumes = getSpecificDataSets(data, PriceType::Volume);
+
+    // 計算指標
+    auto bband_20 = TechnicalIndicators::CalculateBBand(closePrices, 20, 0, data.size() - 1);
+    auto sma5 = TechnicalIndicators::CalculateSMA(5, closePrices, 0, data.size() - 1);
+    auto sma22 = TechnicalIndicators::CalculateSMA(22, closePrices, 0, data.size() - 1);
+    auto sma243 = TechnicalIndicators::CalculateSMA(243, closePrices, 0, data.size() - 1);
+    auto macd_price = TechnicalIndicators::CalculateMACD(10, 22, 5, closePrices, 0, data.size() - 1);
+    auto macd_vol = TechnicalIndicators::CalculateMACD(10, 22, 5, volumes, 0, data.size() - 1);
+    auto kdj = TechnicalIndicators::CalculateKDJ(closePrices, 6, 2, 2, 0, data.size() - 1);
+
+    auto cross_ma = CrossLine(closePrices, sma22, 0, closePrices.size());
+    auto cross_macd_prices = CrossLine(macd_price.dif, macd_price.dea, 0, macd_price.dif.size());
+
+    std::deque<int> dq; // 紀錄均線穿越的時間點
+
+    // 起點：至少要有一段歷史資料（例如 120 天）來算 Percentile
+    for (int i = 120; i < data.size(); i++) {
+        // 更新滑動視窗 (10天內)
+        while (!dq.empty() && dq.front() < i - 10) {
+            dq.pop_front();
+        }
+        if (cross_ma.golden_cross.count(i) || cross_ma.death_cross.count(i)) {
+            dq.push_back(i);
+        }
+
+        // =========================== 策略 1: 趨勢突破 =========================== //
+        // 修正：往回看 120 天
+        double p80 = TechnicalIndicators::PercentVal(bband_20.standardDeviation, i - 120, i, 0.8);
+        
+        // 價格在年線上 (sma243)
+        if (closePrices[i] > sma243[i] && bband_20.standardDeviation[i] > p80) {
+            // MACD 快線剛好穿過慢線 (黃金交叉)
+            if (cross_macd_prices.golden_cross.count(i) && macd_vol.histogram[i] > 0) {
+                trade_signal.push_back({data[i].date, data[i].close, SignalType::BUY, "Trend Breakout (P80 BBW)"});
+                continue;
+            }
+        }
+
+        // =========================== 策略 2: 盤整噴發前兆 =========================== //
+        double p20 = TechnicalIndicators::PercentVal(bband_20.standardDeviation, i - 120, i, 0.2);
+        
+        // 波動率極低 (P20) 且 近期頻繁穿梭均線 (盤整)
+        if (bband_20.standardDeviation[i] < p20 && dq.size() >= 3) {
+            // 在低波動盤整時，如果 MACD 出現向上的動能
+            if (macd_price.histogram[i] > 0 && macd_price.histogram[i-1] < macd_price.histogram[i] && macd_vol.histogram[i] >= 0) {
+                trade_signal.push_back({data[i].date, data[i].close, SignalType::BUY, "MACD good"});
+            }
+
+            // 盤整間的套利 --> 價格平均位於低檔（KD 在低檔）
+            if (kdj.kValues[i - 1] < kdj.dValues[i - 1] && kdj.kValues[i] > kdj.dValues[i] && kdj.kValues[i] < 20){
+                trade_signal.push_back({data[i].date, data[i].close, SignalType::BUY, "Consolidation, kdj is low, kdj golden cross"});
+            }
+        }
+
+
+        //========================================= 賣 =========================================//
+        // 跌破 5 日線
+        if (closePrices[i] <= sma5[i]){
+            trade_signal.push_back({data[i].date, data[i].close, SignalType::SELL, "Drop below MA5"});
+        }
+
+        // 盤整時的低點
+        if (bband_20.standardDeviation[i] < p20 && dq.size() >= 3){
+            if (macd_price.histogram[i] < 0 && macd_price.histogram[i-1] > macd_price.histogram[i] && macd_vol.histogram[i] < 0) {
+                trade_signal.push_back({data[i].date, data[i].close, SignalType::SELL, "MACD bad"});
+            }
+        }
+
+        // 盤整間的套利 --> 價格平均位於低檔（KD 在低檔）
+        if (kdj.kValues[i - 1] > kdj.dValues[i - 1] && kdj.kValues[i] < kdj.dValues[i] && kdj.kValues[i] > 80){
+            trade_signal.push_back({data[i].date, data[i].close, SignalType::SELL, "Consolidation, kdj is high, kdj death cross"});
+        }
+
+    }
+
+    return trade_signal;
 }

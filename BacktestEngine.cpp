@@ -11,6 +11,10 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
     result.WinRate = 0.0;
     result.remaining_stock = 0.0;
 
+    // 用來算 ROI
+    double TotalExpenditure = 0.0;
+    double TotalEarned = 0.0;
+
     double cash = initial_money;
     std::deque<double> stock_inventory; // 庫存成本隊列
     int win_trades = 0; // 賺錢的次數
@@ -58,6 +62,9 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
                 cash += sig.price;
                 double profit = sig.price - buy_cost;
                 result.remaining_stock -= 1;
+                TotalExpenditure += buy_cost;
+                TotalEarned += profit;
+            
 
                 // 判斷勝負
                 if (profit > 0) {
@@ -93,6 +100,10 @@ BacktestResult BacktestEngine::Run(const std::vector<TradeSignal>& signals, doub
         result.WinRate = (double)win_trades / result.TotalTrades * 100.0; // 乘 100 變百分比
     } else {
         result.WinRate = 0.0;
+    }
+
+    if (TotalExpenditure != 0){
+        result.ROI = TotalEarned / TotalExpenditure * 100;
     }
 
     return result;

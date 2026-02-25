@@ -4,7 +4,7 @@
 #include "DataStructures.h"
 
 // 2. 顯示資料預覽的函式 (只印出前 5 筆和後 5 筆，避免洗版)
-void printDataPreview(const std::vector<CandleStick>& history) {
+inline void printDataPreview(const std::vector<CandleStick>& history) {
     if (history.empty()) {
         std::cout << "無資料可顯示。" << std::endl;
         return;
@@ -35,7 +35,7 @@ void printDataPreview(const std::vector<CandleStick>& history) {
 }
 
 
-void printTechnicalIndicator(const std::vector<CandleStick>& history, 
+inline void printTechnicalIndicator(const std::vector<CandleStick>& history, 
                              const std::vector<double>& indicator_data, 
                              std::string indicator_name, 
                              int count = 5) {
@@ -73,7 +73,7 @@ void printTechnicalIndicator(const std::vector<CandleStick>& history,
 
 
 // 專門用來印 RSI 的函式，處理了 index 對齊問題
-void printRSI(const std::vector<CandleStick>& history, 
+inline void printRSI(const std::vector<CandleStick>& history, 
               const std::vector<double>& rsi_data, 
               int period, 
               int count = 5) {
@@ -113,7 +113,7 @@ void printRSI(const std::vector<CandleStick>& history,
 
 // 專門印 MACD 的函式
 // 技巧：我們以「最短」的柱狀圖 (Histogram) 為基準，向後對齊
-void printMACD(const std::vector<CandleStick>& history, 
+inline void printMACD(const std::vector<CandleStick>& history, 
                const MACDResult& macd, 
                int count = 5) {
     
@@ -163,14 +163,14 @@ void printMACD(const std::vector<CandleStick>& history,
 
 
 // 輔助函式：把 SignalType (Enum) 轉成字串
-std::string SignalTypeToString(SignalType type) {
+inline std::string SignalTypeToString(SignalType type) {
     if (type == SignalType::BUY) return "BUY ";
     if (type == SignalType::SELL) return "SELL";
     return "NONE";
 }
 
 // 主函式：印出漂亮的表格
-void PrintTradeSignals(const std::vector<TradeSignal>& signals) {
+inline void PrintTradeSignals(const std::vector<TradeSignal>& signals) {
     std::cout << "========================================================================================\n";
     std::cout << "                                  TRADE SIGNALS REPORT                                  \n";
     std::cout << "========================================================================================\n";
@@ -181,7 +181,7 @@ void PrintTradeSignals(const std::vector<TradeSignal>& signals) {
               << std::setw(8)  << "Type" 
               << std::setw(10) << "Price" 
               << std::setw(20) << "Reason" 
-              << std::setw(10) << "DIF" 
+              << std::setw(20) << "DIF" 
               << std::setw(10) << "DEA" 
               << std::setw(10) << "Hist" 
               << std::endl;
@@ -205,7 +205,7 @@ void PrintTradeSignals(const std::vector<TradeSignal>& signals) {
                   << std::setw(20) << it->reason;
         
         // MACD 數值切換精確度 (4 位小數)
-        std::cout << std::setprecision(4) 
+        std::cout << std::setprecision(1) 
                   << std::setw(10) << it->macd_dif 
                   << std::setw(10) << it->macd_dea 
                   << std::setw(10) << it->macd_hist 
@@ -217,42 +217,121 @@ void PrintTradeSignals(const std::vector<TradeSignal>& signals) {
 }
 
 
-void PrintBacktestResult(const BacktestResult& result) {
-    // 定義 ANSI 顏色代碼
+// 輔助函式：根據數值正負回傳帶顏色的字串
+inline std::string ColorText(double value, int precision = 2, std::string unit = "") {
     const std::string RESET = "\033[0m";
     const std::string RED = "\033[31m";
     const std::string GREEN = "\033[32m";
-    const std::string BOLD = "\033[1m";
+    
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(precision);
+    
+    if (value > 0) {
+        ss << GREEN << "+" << value << unit << RESET;
+    } else if (value < 0) {
+        ss << RED << value << unit << RESET; // 負數自帶負號
+    } else {
+        ss << value << unit;
+    }
+    return ss.str();
+}
 
+
+inline void PrintBacktestResult(const BacktestResult& result) {
     std::cout << std::endl;
     std::cout << "==========================================" << std::endl;
     std::cout << "           BACKTEST PERFORMANCE           " << std::endl;
     std::cout << "==========================================" << std::endl;
 
-    // 1. 總交易次數
-    std::cout << std::left << std::setw(20) << "Total Trades:" 
+    // 1. 基礎統計
+    std::cout << std::left << std::setw(25) << "Total Trades:" 
               << result.TotalTrades << std::endl;
 
-    // 2. 勝率 (顯示小數點後 2 位)
-    std::cout << std::left << std::setw(20) << "Win Rate:" 
+    std::cout << std::left << std::setw(25) << "Win Rate:" 
               << std::fixed << std::setprecision(2) << result.WinRate << "%" << std::endl;
+    
+    std::cout << std::left << std::setw(25) << "Stock on Hold:" 
+              << result.remaining_stock << std::endl;
 
-    // 3. 總損益 (根據正負顯示顏色)
-    std::cout << std::left << std::setw(20) << "Total P/L:";
+    // 2. 財務表現 (使用 ColorText 簡化)
+    std::cout << std::left << std::setw(25) << "Total P/L:" 
+              << ColorText(result.TotalProfit) << std::endl;
 
-    if (result.TotalProfit > 0) {
-        std::cout << GREEN << "+" << std::fixed << std::setprecision(2) 
-                  << result.TotalProfit << RESET << std::endl;
-    } else if (result.TotalProfit < 0) {
-        std::cout << RED << std::fixed << std::setprecision(2) 
-                  << result.TotalProfit << RESET << std::endl;
-    } else {
-        std::cout << std::fixed << std::setprecision(2) 
-                  << result.TotalProfit << std::endl;
-    }
+    // 加入 ROI (投資報酬率)
+    std::cout << std::left << std::setw(25) << "ROI:" 
+              << ColorText(result.ROI, 2, "%") << std::endl;
 
     std::cout << "==========================================" << std::endl;
     std::cout << std::endl;
+}
+
+inline void PrintKdj(const KdjResult& result, const std::vector<std::string>& dates, int limit = 20) {
+    // 1. 基本檢查
+    size_t total_size = result.kValues.size();
+    if (dates.size() != total_size) {
+        std::cerr << "錯誤：日期數量與 KDJ 數據數量不符！" << std::endl;
+        return;
+    }
+
+    // 2. 計算起始點 (start_index)
+    size_t start_index = 0;
+    if (limit > 0 && limit < total_size) {
+        start_index = total_size - limit;
+    }
+
+    std::cout << "=========================================================" << std::endl;
+    // 顯示標題，如果有限制，可以提示一下
+    std::cout << "KDJ Table (Last " << (limit == 0 ? total_size : limit) << " Days)" << std::endl;
+    std::cout << std::left << std::setw(15) << "Date" 
+              << std::right << std::setw(10) << "K" 
+              << std::setw(10) << "D" 
+              << std::setw(10) << "J" << std::endl;
+    std::cout << "---------------------------------------------------------" << std::endl;
+
+    std::cout << std::fixed << std::setprecision(2);
+
+    // 3. 迴圈從 start_index 開始，而不是從 0 開始
+    for (size_t i = start_index; i < total_size; ++i) {
+        // 根據 J 值加入簡單的顏色標示 (Mac/Linux Only, Windows 可拿掉)
+        std::string color = "\033[0m"; // Reset
+        if (result.jValues[i] < 0) color = "\033[32m";      // 綠色 (超賣/潛在買點)
+        else if (result.jValues[i] > 100) color = "\033[31m"; // 紅色 (超買/潛在賣點)
+
+        std::cout << std::left << std::setw(15) << dates[i] 
+                  << std::right << std::setw(10) << result.kValues[i] 
+                  << std::setw(10) << result.dValues[i] 
+                  << color << std::setw(10) << result.jValues[i] << "\033[0m" << std::endl;
+    }
+    std::cout << "=========================================================" << std::endl;
+}
+
+
+// 1. 印出優化過程的表頭
+inline void PrintOptimizationHeader() {
+    std::cout << "🚀 開始尋找 KDJ 最佳參數 (暴力搜尋中...)" << std::endl;
+    std::cout << "----------------------------------------------------------------------------------" << std::endl;
+    std::cout << std::left  << std::setw(10) << "狀態" 
+              << std::right << std::setw(6)  << "RSV" 
+              << std::setw(6)  << "K" 
+              << std::setw(6)  << "D" 
+              << std::setw(15) << "淨利 (Profit)" 
+              << std::setw(12) << "交易次數"
+              << std::setw(12) << "勝率 (%)" 
+              << std::endl;
+    std::cout << "----------------------------------------------------------------------------------" << std::endl;
+}
+
+// 2. 印出每一筆新的最佳紀錄
+inline void PrintNewBestRecord(int rsv, int k, int d, const BacktestResult& result) {
+    std::cout << std::left  << std::setw(10) << "🏆 新冠軍" 
+              << std::right << std::setw(6)  << rsv 
+              << std::setw(6)  << k 
+              << std::setw(6)  << d 
+              << std::fixed << std::setprecision(2) << std::setw(15) << result.TotalProfit
+              << std::setw(12) << result.TotalTrades 
+              << std::setw(11) << result.WinRate << "%"
+              << result.remaining_stock
+              << std::endl;
 }
 
 
