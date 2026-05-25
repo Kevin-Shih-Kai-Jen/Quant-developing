@@ -1,0 +1,22 @@
+# =============================================================================
+# Nexus Quant OS — Python Dependencies (Linux ARM64 / Docker)
+# =============================================================================
+# Target: python:3.11-slim (Debian Bookworm) on Colima (Mac M1)
+# Note : CPU-only PyTorch. torch installed separately in Dockerfile.
+# =============================================================================
+
+numpy<2                   # CRITICAL: <2 avoids C-ABI breakage with torch/sklearn
+pandas>=2.1,<3            # DataFrame engine
+scipy>=1.11,<2            # Numerical computing (hmmlearn, sklearn dependency)
+scikit-learn>=1.3,<2      # Isolation Forest, StandardScaler
+hmmlearn>=0.3,<1          # Gaussian HMM for regime detection
+pydantic>=2.4,<3          # Runtime data validation
+
+# ── Real Data Sources ─────────────────────────────────────────────────
+# Web UI (FastAPI)
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.5.0
+yfinance>=0.2.38          # Yahoo Finance OHLCV (free, no API key)
+fredapi>=0.5.1            # FRED macro indicators (free API key required)
+requests>=2.31            # HTTP client (yfinance/fredapi dependency)

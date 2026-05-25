@@ -1,0 +1,48 @@
+# =============================================================================
+# Nexus Quant OS — Docker Compose Configuration
+# =============================================================================
+
+services:
+  quant_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_quant_os
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app          # Mac 本機改 code → 容器內即時生效（不需重 build）
+    env_file:
+      - .env            # 從 .env 注入 FRED_API_KEY 等私密設定
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    command: python main.py
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_quant_os_api
+    ports:
+      - "8080:8000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
