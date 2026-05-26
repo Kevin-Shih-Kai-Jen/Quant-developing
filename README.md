@@ -128,7 +128,8 @@ Nexus Quant OS 內建高度解耦的插件介面 (`BasePlugin`)，讓您可以�
 |:--|:--|
 | [DEVELOPMENT_JOURNAL.md](DEVELOPMENT_JOURNAL.md) | 完整開發歷程 — 從爬蟲原型到 v2.2 的技術演化與架構決策 |
 | [ROADMAP.md](ROADMAP.md) | 未來功能路線圖 — Paper Trading、AI 理財顧問、Alpha 獵手 |
-| [docs/TECHNICAL_ARCHITECTURE_RESEARCH.md](docs/TECHNICAL_ARCHITECTURE_RESEARCH.md) | 深度技術架構研究 — Alpaca 對帳模式、AI Agent 記憶體、供應鏈 NLP |
+| [docs/TECHNICAL_ARCHITECTURE_RESEARCH.md](docs/TECHNICAL_ARCHITECTURE_RESEARCH.md) | Deep Think — Alpaca 對帳模式、AI Agent 記憶體、供應鏈 NLP |
+| [docs/INFRASTRUCTURE_SPEC.md](docs/INFRASTRUCTURE_SPEC.md) | Deep Research — 金融 LLM 基準、交易引擎選型、零成本知識圖譜 ETL |
 | [audit_report_data_integrity.md](audit_report_data_integrity.md) | 七層前瞻偏誤審計 + Scaler 指紋鑑定 + Alpha 歸因實驗 |
 | [backtest_report_2020_2026_OOS.md](backtest_report_2020_2026_OOS.md) | 2020-2026 完整 OOS 回測績效報告 |
 
