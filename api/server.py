@@ -90,6 +90,37 @@ class PipelineResponse(BaseModel):
     reasoning: Dict[str, Any]
 
 
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    conversation_id: str
+
+
+from nexus_quant_os.advisor.agent import NexusAdvisor
+
+@app.post("/api/advisor/chat", response_model=ChatResponse)
+async def advisor_chat(req: ChatRequest):
+    """Conversational endpoint for the AI Financial Advisor."""
+    try:
+        advisor = NexusAdvisor(conversation_id=req.conversation_id)
+        response_text = await advisor.chat(req.message)
+        
+        # Depending on how the SDK returns conversation_id, ensure we get it
+        new_conv_id = getattr(advisor, "conversation_id", req.conversation_id) or ""
+        
+        return ChatResponse(
+            response=response_text,
+            conversation_id=new_conv_id
+        )
+    except Exception as e:
+        logger.error(f"Advisor chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     index_file = STATIC_DIR / "index.html"
