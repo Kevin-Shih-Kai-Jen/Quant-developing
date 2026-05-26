@@ -22,3 +22,8 @@ pydantic>=2.5.0
 yfinance>=0.2.38          # Yahoo Finance OHLCV (free, no API key)
 fredapi>=0.5.1            # FRED macro indicators (free API key required)
 requests>=2.31            # HTTP client (yfinance/fredapi dependency)
+
+# ── Testing & Reliability ────────────────────────────────────────────
+pytest>=7.0               # Test framework
+pytest-mock>=3.0           # Mock support for pytest
+tenacity>=8.0              # Retry with exponential backoff

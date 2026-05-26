@@ -34,6 +34,8 @@ services:
       - "8080:8000"
     volumes:
       - .:/app
+      - ./data:/app/data      # SQLite 持倉帳本 (持久化)
+      - ./logs:/app/logs      # 交易日誌 (持久化)
     env_file:
       - .env
     environment:

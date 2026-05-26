@@ -32,12 +32,14 @@ from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAll
 from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
 from nexus_quant_os.llm.sentiment_aggregator import SentimentAggregator
 from nexus_quant_os.llm.news_fetcher import NewsFetcher
+from nexus_quant_os.execution.broker_router import SimulatedBroker
+from nexus_quant_os.execution.trade_logger import TradeLogger
 
 # Initialize Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nexus_quant_os.api")
 
-app = FastAPI(title="Nexus Quant OS API", version="2.0.0")
+app = FastAPI(title="Nexus Quant OS API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +61,26 @@ _last_assets: list[str] | None = None  # 追蹤 assets 變化以重建 allocator
 _optimizer: PortfolioOptimizer | None = None
 _sentiment: SentimentAggregator | None = None
 _news_fetcher: NewsFetcher | None = None
+
+# ── v2.1: 模擬交易引擎（Paper Trading） ──────────────────────────────
+_broker: SimulatedBroker | None = None
+_trade_logger: TradeLogger | None = None
+
+
+def _get_broker() -> SimulatedBroker:
+    """Lazy-init SimulatedBroker singleton."""
+    global _broker
+    if _broker is None:
+        _broker = SimulatedBroker(initial_capital=100_000.0)
+    return _broker
+
+
+def _get_trade_logger() -> TradeLogger:
+    """Lazy-init TradeLogger singleton."""
+    global _trade_logger
+    if _trade_logger is None:
+        _trade_logger = TradeLogger()
+    return _trade_logger
 
 
 class PipelineResponse(BaseModel):
@@ -321,4 +343,149 @@ async def run_pipeline():
 
     except Exception as e:
         logger.exception("Pipeline execution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# v2.1: 模擬交易 API (Paper Trading Endpoints)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@app.post("/api/execute_trades")
+async def execute_trades(pipeline_result: PipelineResponse):
+    """
+    接收 /api/run_pipeline 的輸出，執行模擬交易。
+
+    流程:
+    1. 從 allocations 提取目標權重
+    2. SimulatedBroker.reconcile() 計算差額
+    3. SimulatedBroker.execute() 模擬成交
+    4. TradeLogger 記錄交易日誌
+    5. 回傳交易結果
+    """
+    try:
+        broker = _get_broker()
+        trade_logger = _get_trade_logger()
+
+        # 檢查市場是否開盤（模擬模式允許非開盤時段執行，但會記錄）
+        market_open = broker.is_market_open()
+        logger.info("市場狀態: %s", "開盤" if market_open else "休市")
+
+        # 從 pipeline 結果提取目標權重
+        target_weights = {}
+        for alloc in pipeline_result.allocations:
+            weight = alloc.get("safe_weight", 0.0)
+            if weight > 0.001:  # 忽略極小權重
+                target_weights[alloc["asset"]] = weight
+
+        if not target_weights:
+            return {
+                "status": "skipped",
+                "message": "No meaningful target weights from pipeline.",
+                "trades": [],
+                "portfolio_value": broker.get_portfolio_value(),
+            }
+
+        # 正規化權重確保總和 = 1.0
+        total = sum(target_weights.values())
+        if total > 0:
+            target_weights = {k: v / total for k, v in target_weights.items()}
+
+        # 對帳 + 執行
+        intents = broker.reconcile(target_weights)
+        results = broker.execute(intents)
+
+        # 記錄每日快照
+        broker.take_daily_snapshot()
+
+        # 寫入交易日誌
+        account = broker.get_account()
+        positions = broker.get_positions()
+        trade_logger.log_daily_performance(account, positions)
+        for result in results:
+            trade_logger.log_trade(result, pipeline_result.reasoning)
+
+        return {
+            "status": "success",
+            "message": f"Executed {len(results)} trades.",
+            "market_open": market_open,
+            "trades": [
+                {
+                    "symbol": r.symbol,
+                    "side": r.side,
+                    "qty": r.qty,
+                    "filled_price": r.filled_price,
+                    "commission": r.commission,
+                    "order_id": r.order_id,
+                    "status": r.status,
+                }
+                for r in results
+            ],
+            "portfolio_value": broker.get_portfolio_value(),
+        }
+
+    except Exception as e:
+        logger.exception("Trade execution failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/portfolio")
+async def get_portfolio():
+    """回傳當前模擬交易組合的即時持倉。"""
+    try:
+        broker = _get_broker()
+        account = broker.get_account()
+        positions = broker.get_positions()
+
+        return {
+            "equity": account.equity,
+            "cash": account.cash,
+            "buying_power": account.buying_power,
+            "timestamp": account.timestamp.isoformat(),
+            "positions": [
+                {
+                    "symbol": p.symbol,
+                    "qty": p.qty,
+                    "avg_cost": p.avg_cost,
+                    "current_price": p.current_price,
+                    "market_value": p.market_value,
+                    "unrealized_pl": p.unrealized_pl,
+                    "unrealized_pl_pct": p.unrealized_pl_pct,
+                }
+                for p in positions
+            ],
+        }
+
+    except Exception as e:
+        logger.exception("Portfolio fetch failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/performance")
+async def get_performance():
+    """回傳歷史績效曲線（每日淨值快照）。"""
+    try:
+        broker = _get_broker()
+        history = broker.get_performance_history()
+
+        if not history:
+            return {"status": "empty", "message": "No performance history yet.", "data": []}
+
+        initial_value = history[0].get("equity", 100_000.0)
+        for entry in history:
+            entry["cumulative_return"] = (entry["equity"] / initial_value - 1) * 100
+
+        return {
+            "status": "success",
+            "data": history,
+            "summary": {
+                "initial_value": initial_value,
+                "current_value": history[-1].get("equity", 0),
+                "total_return_pct": history[-1].get("cumulative_return", 0),
+                "trading_days": len(history),
+            },
+        }
+
+    except Exception as e:
+        logger.exception("Performance fetch failed")
         raise HTTPException(status_code=500, detail=str(e))
