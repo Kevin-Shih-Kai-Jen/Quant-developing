@@ -9,9 +9,9 @@ Usage:
 
 Features:
 - Type normally to chat.
-- Type `/image /path/to/img.png <optional prompt>` to upload an image.
-- Type `quit` or `exit` to stop.
-- Session persists automatically.
+- Type ``/image /path/to/img.png <optional prompt>`` to upload an image.
+- Type ``quit`` or ``exit`` to stop.
+- Session persists automatically across restarts.
 
 Author : Nexus Quant OS — Advisor Division
 """
@@ -63,57 +63,71 @@ async def main_loop() -> None:
         print(f"[System] Resuming previous session: {last_id[:8]}...")
     else:
         print("[System] Starting new session...")
-        
-    advisor = NexusAdvisor(conversation_id=last_id)
 
-    while True:
-        try:
-            user_input = input("\nUser: ").strip()
-            if not user_input:
-                continue
-                
-            if user_input.lower() in ["quit", "exit"]:
-                print("[System] Exiting... session saved.")
+    # Fix C6: Use context manager to keep Agent alive across turns
+    async with NexusAdvisor(conversation_id=last_id) as advisor:
+        # Save session ID immediately once agent is opened
+        if advisor.conversation_id:
+            _save_session_id(advisor.conversation_id)
+
+        while True:
+            try:
+                # Fix S4: use asyncio.to_thread to avoid blocking the event loop
+                user_input = (
+                    await asyncio.to_thread(input, "\nUser: ")
+                ).strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ["quit", "exit"]:
+                    # Fix S5: actually save on exit
+                    if advisor.conversation_id:
+                        _save_session_id(advisor.conversation_id)
+                    print("[System] Session saved. Goodbye!")
+                    break
+
+                # Handle multimodal input
+                payload: str | list = user_input
+                if user_input.startswith("/image "):
+                    # parse format: "/image /path/to/image.png what do you see?"
+                    parts = user_input.split(" ", 2)
+                    if len(parts) >= 2:
+                        img_path = parts[1]
+                        prompt = parts[2] if len(parts) == 3 else "Please analyze this image."
+
+                        if not os.path.exists(img_path):
+                            print(f"[Error] Image not found: {img_path}")
+                            continue
+
+                        try:
+                            img_obj = Image.from_file(img_path)
+                            payload = [prompt, img_obj]
+                            print(f"[System] Uploading image: {img_path}...")
+                        except Exception as e:
+                            print(f"[Error] Failed to load image: {e}")
+                            continue
+
+                print("\nNexus: ", end="", flush=True)
+
+                # Stream response
+                async for chunk in advisor.chat_stream(payload):
+                    print(chunk, end="", flush=True)
+
+                print()  # Newline after response completes
+
+                # Save session ID after each successful exchange
+                if advisor.conversation_id:
+                    _save_session_id(advisor.conversation_id)
+
+            except KeyboardInterrupt:
+                # Fix S5: actually save on KeyboardInterrupt
+                if advisor.conversation_id:
+                    _save_session_id(advisor.conversation_id)
+                print("\n[System] Session saved. Goodbye!")
                 break
-
-            # Handle multimodal input
-            payload: str | list = user_input
-            if user_input.startswith("/image "):
-                # parse format: "/image /path/to/image.png what do you see?"
-                parts = user_input.split(" ", 2)
-                if len(parts) >= 2:
-                    img_path = parts[1]
-                    prompt = parts[2] if len(parts) == 3 else "Please analyze this image."
-                    
-                    if not os.path.exists(img_path):
-                        print(f"[Error] Image not found: {img_path}")
-                        continue
-                        
-                    try:
-                        img_obj = Image.from_file(img_path)
-                        payload = [prompt, img_obj]
-                        print(f"[System] Uploading image: {img_path}...")
-                    except Exception as e:
-                        print(f"[Error] Failed to load image: {e}")
-                        continue
-
-            print("\nNexus: ", end="", flush=True)
-            
-            # Stream response
-            async for chunk in advisor.chat_stream(payload):
-                print(chunk, end="", flush=True)
-                
-            print() # Newline after response completes
-            
-            # Save the session ID in case the user quits forcefully later
-            if hasattr(advisor, "conversation_id") and advisor.conversation_id:
-                _save_session_id(advisor.conversation_id)
-
-        except KeyboardInterrupt:
-            print("\n[System] Exiting... session saved.")
-            break
-        except Exception as e:
-            print(f"\n[System Error] {e}")
+            except Exception as e:
+                print(f"\n[System Error] {e}")
 
 
 if __name__ == "__main__":

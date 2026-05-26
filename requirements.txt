@@ -20,6 +20,7 @@ fastapi>=0.109.0
 uvicorn>=0.27.0
 pydantic>=2.5.0
 yfinance>=0.2.38          # Yahoo Finance OHLCV (free, no API key)
+moomoo-api>=10.6          # Moomoo/Futu OpenD API (optional: FutuBroker only)
 fredapi>=0.5.1            # FRED macro indicators (free API key required)
 requests>=2.31            # HTTP client (yfinance/fredapi dependency)
 

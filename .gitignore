@@ -96,3 +96,15 @@ venv.bak/
 # Nexus Quant OS Specific
 nexus_quant_os/models/checkpoints/*.pt
 *.log
+
+# Moomoo / Futu OpenD (binary gateway — DO NOT commit)
+moomoo_OpenD*/
+**/FutuOpenD*/
+
+# Database files (contain personal trading data)
+*.db
+data/
+
+# Advisor memory (contains personal financial context)
+nexus_quant_os/advisor/memory/
+data/advisor_memory/

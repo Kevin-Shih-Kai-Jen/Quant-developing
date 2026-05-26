@@ -27,6 +27,7 @@ Author : Nexus Quant OS — Execution Engineering Division
 from __future__ import annotations
 
 import logging
+import math
 import random
 import sqlite3
 import uuid
@@ -140,7 +141,7 @@ class _PriceCache:
             Mapping of symbol → latest price.  Symbols that cannot be
             priced are omitted from the result.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         result: dict[str, float] = {}
         stale: list[str] = []
 
@@ -154,7 +155,7 @@ class _PriceCache:
 
         if stale:
             fresh = self._fetch(stale)
-            fetch_time = datetime.utcnow()
+            fetch_time = datetime.now(timezone.utc)
             for sym, price in fresh.items():
                 self._cache[sym] = _PriceCacheEntry(
                     prices={sym: price}, fetched_at=fetch_time,
@@ -204,7 +205,11 @@ class _PriceCache:
                     val = df["Close"].iloc[-1]
                     if hasattr(val, "item"):
                         val = val.item()
-                    prices[sym] = float(val)
+                    val = float(val)
+                    if not math.isnan(val):
+                        prices[sym] = val
+                    else:
+                        logger.warning("NaN price for %s — skipping", sym)
             else:
                 for sym in symbols:
                     try:
@@ -213,7 +218,11 @@ class _PriceCache:
                             val = df[col].iloc[-1]
                             if hasattr(val, "item"):
                                 val = val.item()
-                            prices[sym] = float(val)
+                            val = float(val)
+                            if not math.isnan(val):
+                                prices[sym] = val
+                            else:
+                                logger.warning("NaN price for %s — skipping", sym)
                     except (KeyError, IndexError):
                         logger.warning("No price data for %s", sym)
 
@@ -302,7 +311,7 @@ class SimulatedBroker(BrokerBase):
             # Seed account on first run
             row = conn.execute("SELECT COUNT(*) AS cnt FROM account").fetchone()
             if row["cnt"] == 0:
-                now_iso = datetime.utcnow().isoformat()
+                now_iso = datetime.now(timezone.utc).isoformat()
                 conn.execute(
                     "INSERT INTO account (id, cash, initial_capital, created_at, updated_at) "
                     "VALUES (1, ?, ?, ?, ?)",
@@ -328,7 +337,7 @@ class SimulatedBroker(BrokerBase):
         """Update cash balance (caller must commit)."""
         conn.execute(
             "UPDATE account SET cash = ?, updated_at = ? WHERE id = 1",
-            (new_cash, datetime.utcnow().isoformat()),
+            (new_cash, datetime.now(timezone.utc).isoformat()),
         )
 
     # ── Price helper ──────────────────────────────────────────────
@@ -352,13 +361,18 @@ class SimulatedBroker(BrokerBase):
 
     # ── BrokerBase implementation ─────────────────────────────────
 
-    def get_account(self) -> AccountSnapshot:
+    def get_account(self, _positions: list[Position] | None = None) -> AccountSnapshot:
         """Return a snapshot of the simulated account.
 
         Equity is computed as cash + sum of all position market values.
+
+        Parameters
+        ----------
+        _positions : list[Position], optional
+            Pre-fetched positions to avoid redundant DB/API calls.
         """
         cash = self._get_cash()
-        positions = self.get_positions()
+        positions = _positions if _positions is not None else self.get_positions()
         market_value = sum(p.market_value for p in positions)
         equity = cash + market_value
 
@@ -366,7 +380,7 @@ class SimulatedBroker(BrokerBase):
             equity=equity,
             cash=cash,
             buying_power=cash,  # No margin in simulation
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
     def get_positions(self) -> list[Position]:
@@ -435,7 +449,9 @@ class SimulatedBroker(BrokerBase):
         list[OrderIntent]
             Sorted: sells before buys.
         """
-        account = self.get_account()
+        # Fetch positions once and reuse for account snapshot (fix S7: avoid double fetch)
+        positions = self.get_positions()
+        account = self.get_account(_positions=positions)
         equity = account.equity
 
         if equity <= 0:
@@ -443,7 +459,6 @@ class SimulatedBroker(BrokerBase):
             return []
 
         # Current position values by symbol
-        positions = self.get_positions()
         current_values: dict[str, float] = {p.symbol: p.market_value for p in positions}
         current_prices: dict[str, float] = {p.symbol: p.current_price for p in positions}
 
@@ -523,7 +538,12 @@ class SimulatedBroker(BrokerBase):
             One result per intent.
         """
         results: list[OrderResult] = []
-        today_str = date.today().isoformat()
+        # Fix S1: use ET timezone for trade date, not system local time
+        today_str = datetime.now(_ET).date().isoformat()
+
+        # Fix M1: batch-fetch all prices upfront instead of per-intent
+        all_symbols = list({intent.symbol for intent in intents})
+        prefetched_prices = self._get_current_prices(all_symbols)
 
         conn = self._get_conn()
         try:
@@ -546,15 +566,14 @@ class SimulatedBroker(BrokerBase):
                         qty=intent.qty,
                         filled_price=0.0,
                         commission=0.0,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         order_id=str(uuid.uuid4()),
                         status="CANCELLED",
                     ))
                     continue
 
                 # ── Price with slippage ───────────────────────────
-                prices = self._get_current_prices([intent.symbol])
-                base_price = prices.get(intent.symbol)
+                base_price = prefetched_prices.get(intent.symbol)
 
                 if base_price is None or base_price <= 0:
                     logger.warning(
@@ -567,7 +586,7 @@ class SimulatedBroker(BrokerBase):
                         qty=intent.qty,
                         filled_price=0.0,
                         commission=0.0,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         order_id=str(uuid.uuid4()),
                         status="REJECTED",
                     ))
@@ -590,9 +609,12 @@ class SimulatedBroker(BrokerBase):
                 if intent.side == "BUY":
                     total_cost = notional + commission
                     if total_cost > cash:
-                        # Reduce qty to fit available cash
-                        affordable_notional = cash - commission
-                        if affordable_notional <= 0:
+                        # Fix C4: solve algebraically for max qty under cash
+                        # cash = qty * price * (1 + comm_rate)
+                        # qty = cash / (price * (1 + comm_rate))
+                        comm_rate = self._commission_bps / 10_000.0
+                        adjusted_qty = cash / (filled_price * (1.0 + comm_rate))
+                        if adjusted_qty < 0.01:
                             logger.warning(
                                 "REJECTED BUY %s — insufficient cash (%.2f)",
                                 intent.symbol, cash,
@@ -603,12 +625,12 @@ class SimulatedBroker(BrokerBase):
                                 qty=intent.qty,
                                 filled_price=filled_price,
                                 commission=0.0,
-                                timestamp=datetime.utcnow(),
+                                timestamp=datetime.now(timezone.utc),
                                 order_id=str(uuid.uuid4()),
                                 status="REJECTED",
                             ))
                             continue
-                        adjusted_qty = affordable_notional / filled_price
+                        adjusted_qty = round(adjusted_qty, 4)
                         logger.info(
                             "BUY %s qty reduced %.2f → %.2f (cash constraint)",
                             intent.symbol, intent.qty, adjusted_qty,
@@ -616,7 +638,7 @@ class SimulatedBroker(BrokerBase):
                         intent = OrderIntent(
                             symbol=intent.symbol,
                             side="BUY",
-                            qty=round(adjusted_qty, 4),
+                            qty=adjusted_qty,
                             reason=intent.reason + " [cash-adjusted]",
                         )
                         notional = intent.qty * filled_price
@@ -629,6 +651,45 @@ class SimulatedBroker(BrokerBase):
                     )
 
                 else:  # SELL
+                    # Fix C1+C2: cap sell qty to actual held position
+                    held_row = conn.execute(
+                        "SELECT qty FROM positions WHERE symbol = ?",
+                        (intent.symbol,),
+                    ).fetchone()
+                    held_qty = float(held_row["qty"]) if held_row else 0.0
+
+                    if held_qty <= 1e-8:
+                        logger.warning(
+                            "REJECTED SELL %s — no position held",
+                            intent.symbol,
+                        )
+                        results.append(OrderResult(
+                            symbol=intent.symbol,
+                            side="SELL",
+                            qty=intent.qty,
+                            filled_price=filled_price,
+                            commission=0.0,
+                            timestamp=datetime.now(timezone.utc),
+                            order_id=str(uuid.uuid4()),
+                            status="REJECTED",
+                        ))
+                        continue
+
+                    actual_qty = min(intent.qty, held_qty)
+                    if actual_qty < intent.qty:
+                        logger.info(
+                            "SELL %s qty capped %.4f → %.4f (position limit)",
+                            intent.symbol, intent.qty, actual_qty,
+                        )
+                        intent = OrderIntent(
+                            symbol=intent.symbol,
+                            side="SELL",
+                            qty=round(actual_qty, 4),
+                            reason=intent.reason + " [position-capped]",
+                        )
+                        notional = intent.qty * filled_price
+                        commission = notional * (self._commission_bps / 10_000.0)
+
                     proceeds = notional - commission
                     new_cash = cash + proceeds
                     self._upsert_position_sell(conn, intent.symbol, intent.qty)
@@ -644,7 +705,7 @@ class SimulatedBroker(BrokerBase):
                     (
                         order_id, intent.symbol, intent.side,
                         intent.qty, filled_price, commission,
-                        datetime.utcnow().isoformat(), today_str,
+                        datetime.now(timezone.utc).isoformat(), today_str,
                     ),
                 )
 
@@ -654,7 +715,7 @@ class SimulatedBroker(BrokerBase):
                     qty=intent.qty,
                     filled_price=filled_price,
                     commission=commission,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     order_id=order_id,
                     status="FILLED",
                 ))
@@ -668,6 +729,8 @@ class SimulatedBroker(BrokerBase):
             conn.commit()
         except Exception:
             conn.rollback()
+            # Fix C7: clear results to prevent reporting FILLED for rolled-back trades
+            results.clear()
             raise
         finally:
             conn.close()
@@ -695,7 +758,8 @@ class SimulatedBroker(BrokerBase):
         market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
 
-        return market_open <= now_et <= market_close
+        # Fix S2: market closes AT 16:00, not after
+        return market_open <= now_et < market_close
 
     def get_portfolio_value(self) -> float:
         """Return total portfolio equity (cash + positions)."""
@@ -715,7 +779,8 @@ class SimulatedBroker(BrokerBase):
 
         account = self.get_account()
         positions = self.get_positions()
-        today_str = date.today().isoformat()
+        # Fix S1: use ET timezone for snapshot date
+        today_str = datetime.now(_ET).date().isoformat()
 
         positions_data = [
             {
@@ -747,7 +812,7 @@ class SimulatedBroker(BrokerBase):
                     account.equity,
                     account.cash,
                     json.dumps(positions_data),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
@@ -801,8 +866,9 @@ class SimulatedBroker(BrokerBase):
         initial_capital : float, optional
             New starting capital.  Defaults to the original value.
         """
-        capital = initial_capital or self._initial_capital
-        now_iso = datetime.utcnow().isoformat()
+        # Fix S3: 0.0 is falsy, use explicit None check
+        capital = self._initial_capital if initial_capital is None else initial_capital
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         conn = self._get_conn()
         try:
@@ -834,7 +900,7 @@ class SimulatedBroker(BrokerBase):
 
         Computes new weighted-average cost basis.
         """
-        now_iso = datetime.utcnow().isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
             "SELECT qty, avg_cost FROM positions WHERE symbol = ?",
             (symbol,),
@@ -867,7 +933,7 @@ class SimulatedBroker(BrokerBase):
 
         If the resulting quantity is ≤ 0, the position row is deleted.
         """
-        now_iso = datetime.utcnow().isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
         row = conn.execute(
             "SELECT qty FROM positions WHERE symbol = ?",
             (symbol,),
