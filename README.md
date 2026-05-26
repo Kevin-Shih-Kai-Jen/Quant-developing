@@ -100,5 +100,38 @@ Nexus Quant OS 內建高度解耦的插件介面 (`BasePlugin`)，讓您可以�
 
 ---
 
+## 📊 績效驗證 (Performance Validation)
+
+本系統經過嚴格的七層前瞻偏誤審計，確認**無數據洩漏**。
+
+### OOS 壓力測試 (2020-2026, 模型僅訓練 2019 前數據)
+
+| 指標 | MoE 策略 | SPY 買進持有 |
+|:--|:--|:--|
+| 總報酬 | **+374.0%** | +151.2% |
+| CAGR | **+27.77%** | +15.56% |
+| Sharpe | **+1.536** | +0.812 |
+| 最大回撤 | **-8.74%** | -33.72% |
+
+### Alpha 歸因對照實驗
+
+- **等權基準** (10 ETF 瞎抱): +168.0% → 模型擇時額外貢獻 +206%
+- **排除 NVDA/AVGO** (8 ETF): Max DD **-9.42%** (SPY: -18.76%) / **Sharpe 1.376**
+
+> 詳見 [數據完整性審計報告](audit_report_data_integrity.md)
+
+---
+
+## 📚 專案文件 (Documentation)
+
+| 文件 | 說明 |
+|:--|:--|
+| [DEVELOPMENT_JOURNAL.md](DEVELOPMENT_JOURNAL.md) | 完整開發歷程 — 從爬蟲原型到 v2.2 的技術演化與架構決策 |
+| [ROADMAP.md](ROADMAP.md) | 未來功能路線圖 — Paper Trading、AI 理財顧問、Alpha 獵手 |
+| [audit_report_data_integrity.md](audit_report_data_integrity.md) | 七層前瞻偏誤審計 + Scaler 指紋鑑定 + Alpha 歸因實驗 |
+| [backtest_report_2020_2026_OOS.md](backtest_report_2020_2026_OOS.md) | 2020-2026 完整 OOS 回測績效報告 |
+
+---
+
 ## ⚖️ 免責聲明 (Disclaimer)
 本專案為量化交易架構的研究與展示用途。系統給出的任何資產配置權重與預測均不構成投資建議。金融市場具備高度不可預測性，請自行評估風險，開發者不對任何實際交易所產生的損失負責。
