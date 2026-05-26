@@ -61,11 +61,14 @@ logger = logging.getLogger("nexus_quant_os.training.train_moe")
 # 全域訓練常量
 # ═════════════════════════════════════════════════════════════════════
 
-ASSET_UNIVERSE  = ["AVGO", "GLD", "IWM", "NVDA", "PSQ", "QQQ", "SH", "SHY", "SPY", "TLT"]  # 字母排序
+ASSET_UNIVERSE  = [
+    "AVGO", "GLD", "IWM", "NVDA", "PSQ",
+    "QQQ", "SH", "SHY", "SPY", "TLT",
+]
 N_ASSETS        = len(ASSET_UNIVERSE)     # 10
 N_FEATURES      = 9                       # 每資產特徵數（v2: +yield_curve_slope）
 INPUT_DIM       = N_ASSETS * N_FEATURES   # 90 = 橫截面輸入維度
-OUTPUT_DIM      = N_ASSETS                # 10  = 投資組合權重維度
+OUTPUT_DIM      = N_ASSETS                # 10 = 投資組合權重維度
 
 NUM_EXPERTS     = 4
 TOP_K           = 2
