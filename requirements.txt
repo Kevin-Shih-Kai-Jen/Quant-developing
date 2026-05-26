@@ -11,6 +11,8 @@ scipy>=1.11,<2            # Numerical computing (hmmlearn, sklearn dependency)
 scikit-learn>=1.3,<2      # Isolation Forest, StandardScaler
 hmmlearn>=0.3,<1          # Gaussian HMM for regime detection
 pydantic>=2.4,<3          # Runtime data validation
+cvxpy>=1.4                # Convex optimization (MVO)
+osqp>=0.6                 # Convex solver
 
 # ── Real Data Sources ─────────────────────────────────────────────────
 # Web UI (FastAPI)

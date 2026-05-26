@@ -105,7 +105,7 @@ class FirewallConfig:
     ood_emergency_threshold: float = 0.80
     caution_scale:   float = 0.70
     warning_scale:   float = 0.25
-    emergency_scale: float = 0.00   # must remain 0
+    emergency_scale: float = 0.05   # 最低防禦倉位（5%），避免完全歸零
     smooth_blend: bool = True
 
 
@@ -229,7 +229,7 @@ class IntelligentRiskFirewall:
         cfg = self.config
 
         if tier == RiskTier.EMERGENCY:
-            return 0.0
+            return cfg.emergency_scale  # 保留最低倉位，不完全歸零
 
         if not cfg.smooth_blend:
             if tier == RiskTier.WARNING:

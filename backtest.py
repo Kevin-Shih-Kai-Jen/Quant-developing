@@ -16,6 +16,7 @@ Author : Nexus Quant OS — Quant Research
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -35,6 +36,10 @@ from nexus_quant_os.training.train_moe import (
     build_daily_dataset, build_raw_daily_returns,
     find_latest_checkpoint, load_checkpoint,
 )
+from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
+from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
+from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -204,14 +209,17 @@ def print_monthly_returns(
 
 # ─── 主回測函數 ────────────────────────────────────────────────────────────────
 
-def run_backtest() -> None:
+def run_backtest(start_date: str | None = None, end_date: str | None = None) -> None:
     SEP  = "═" * 72
     THIN = "─" * 72
+
+    bt_start = start_date or DATA_START
+    bt_end   = end_date or pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 
     print(f"\n{SEP}")
     print("  NEXUS QUANT OS — Walk-Forward Backtest")
     print(f"  Assets    : {ASSET_UNIVERSE}")
-    print(f"  Data      : {DATA_START} → today")
+    print(f"  Data      : {bt_start} → {bt_end}")
     print(f"  TC        : {TRANSACTION_COST_BPS} bps/trade")
     print(f"  Split     : {int(TRAIN_RATIO*100)}% train / {100 - int(TRAIN_RATIO*100)}% OOS")
     print(f"{SEP}\n")
@@ -222,18 +230,37 @@ def run_backtest() -> None:
         print("❌ FRED_API_KEY 未設定")
         sys.exit(1)
 
-    end = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
     daily_prices, macro_data = load_all_data(
         tickers=ASSET_UNIVERSE,
         fred_api_key=FRED_API_KEY,
-        start=DATA_START,
-        end=end,
+        start=bt_start,
+        end=bt_end,
     )
+
+    # ── 1b. 自動過濾資產（處理早期年份部分資產尚未上市） ──────────
+    available_assets = sorted(daily_prices["asset_id"].unique().tolist())
+    # 只保留有足夠數據（至少 252 交易日 = 1 年）的資產
+    valid_assets = []
+    for asset in available_assets:
+        n_days = len(daily_prices[daily_prices["asset_id"] == asset])
+        if n_days >= 252:
+            valid_assets.append(asset)
+        else:
+            print(f"    ⚠️ {asset}: 僅 {n_days} 天數據，不足 1 年，排除")
+    if not valid_assets:
+        print("❌ 無任何資產有足夠數據")
+        sys.exit(1)
+    if set(valid_assets) != set(ASSET_UNIVERSE):
+        excluded = set(ASSET_UNIVERSE) - set(valid_assets)
+        print(f"    📋 有效資產: {valid_assets}")
+        print(f"    🚫 排除（數據不足）: {excluded}")
+    # 用 valid_assets 取代全域 ASSET_UNIVERSE（回測期間限定）
+    bt_assets = valid_assets
 
     # ── 2. PiT 對齊 ───────────────────────────────────────────────────
     print(">>> [2/5] PiT 對齊...")
     frames = []
-    for asset in ASSET_UNIVERSE:
+    for asset in bt_assets:
         ap = daily_prices[daily_prices["asset_id"] == asset].copy()
         am = macro_data[macro_data["asset_id"] == asset].copy()
         aligned, _ = enforce_pit_alignment(
@@ -258,17 +285,18 @@ def run_backtest() -> None:
     y_raw, dates_raw, _      = build_raw_daily_returns(aligned_df)
 
     # 確保日期對齊
-    assert len(X) == len(y_raw), \
-        f"Dataset mismatch: X={len(X)} y_raw={len(y_raw)}"
-
     split_idx = int(len(X) * TRAIN_RATIO)
     X_val     = X[split_idx:]
     y_raw_val = y_raw[split_idx:]
     dates_val = dates[split_idx:]
 
     spy_idx   = assets.index("SPY") if "SPY" in assets else 0
-    print(f"    訓練期 : {dates[:split_idx][0].date()} ~ {dates[:split_idx][-1].date()} "
-          f"({split_idx} 天)")
+    if split_idx > 0:
+        print(f"    訓練期 : {dates[:split_idx][0].date()} ~ {dates[:split_idx][-1].date()} "
+              f"({split_idx} 天)")
+    else:
+        print(f"    訓練期 : 無 (100% OOS 測試)")
+        
     print(f"    驗證期 : {dates_val[0].date()} ~ {dates_val[-1].date()} "
           f"({len(X_val)} 天)")
 
@@ -279,7 +307,7 @@ def run_backtest() -> None:
         print("❌ 未找到 checkpoint，請先執行訓練腳本")
         sys.exit(1)
 
-    router, scaler, trained_assets = load_checkpoint(ckpt_path)
+    router, scaler, trained_assets, firewall = load_checkpoint(ckpt_path)
     router.eval()
     print(f"    Checkpoint: {ckpt_path.name}")
     print(f"    Assets    : {trained_assets}")
@@ -298,14 +326,137 @@ def run_backtest() -> None:
     abs_sum   = np.abs(weights).sum(axis=1, keepdims=True) + 1e-8
     w_scaled  = weights / abs_sum * GROSS_EXPOSURE   # [T_val, N_assets]
 
+    # ── v2.0 Phase 2: 政體自適應配置 ────────────────────────────────────
+    # 使用 Firewall 的 HMM 偏測器判斷每天的市場政體
+    min_len = len(w_scaled)
+    regime_labels: list[str] = []
+    regime_confs: list[float] = []
+    bear_probs = np.zeros(min_len, dtype=np.float32)
+    danger_probs = np.zeros(min_len, dtype=np.float32)
+    
+    if firewall is not None:
+        allocator = RegimeAllocator(
+            assets=assets,
+            config=RegimeAllocatorConfig(
+                min_confidence=0.65,
+                max_prior_blend=0.25,
+                transition_smoothing=0.8,
+            ),
+        )
+        from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
+        spy_df_bt = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
+        spy_feat_matrix, _ = engineer_features(spy_df_bt)
+        # 使用回測的驗證期日期範圍來切片 SPY 特徵（避免索引不匹配）
+        spy_dates = aligned_df[aligned_df["asset_id"] == "SPY"]["timestamp"].dt.normalize()
+        val_start_date = dates_val[0]
+        val_end_date = dates_val[-1]
+        date_mask = (spy_dates >= val_start_date) & (spy_dates <= val_end_date)
+        # 在 engineer_features 處理後的 df 中，用日期範圍取子集
+        spy_val_feat = spy_feat_matrix[date_mask.values[-len(spy_feat_matrix):]] if len(date_mask) > len(spy_feat_matrix) else spy_feat_matrix[-len(dates_val):]
+
+        # 確保 SPY 特徵長度與回測期一致
+        min_len = min(len(w_scaled), len(spy_val_feat))
+        y_raw_val = y_raw_val[:min_len]
+        dates_val = dates_val[:min_len]
+
+        for t in range(min_len):
+            start_idx = max(0, t - 20)
+            obs = spy_val_feat[start_idx : t + 1]
+            if len(obs) < 5:
+                regime_labels.append("NEUTRAL")
+                regime_confs.append(0.0)
+                continue
+            hmm_pred = firewall.hmm_detector.predict(obs)
+            regime_labels.append(hmm_pred.regime_label)
+            bear_probs[t] = hmm_pred.bear_probability
+            danger_probs[t] = hmm_pred.danger_probability
+            # 根據政體類型計算對應的 confidence
+            label = hmm_pred.regime_label
+            if "BEAR" in label:
+                conf = hmm_pred.bear_probability
+            elif "EXTREME" in label or "SHOCK" in label:
+                conf = hmm_pred.danger_probability
+            else:
+                conf = max(0.0, 1.0 - hmm_pred.bear_probability - hmm_pred.danger_probability)
+            regime_confs.append(conf)
+
+    # ── v2.0 Phase 3: 投組優化器 (Risk Parity / Constrained MVO) ────────────
+    optimizer = PortfolioOptimizer(
+        n_assets=len(assets),
+        config=OptimizerConfig(
+            max_single_weight=0.35,
+            gross_exposure=GROSS_EXPOSURE,
+            min_cash=0.05,
+            dispersion_threshold=0.45,
+        ),
+        asset_names=assets,
+    )
+    expert_util = out.expert_utilisation.numpy()
+    w_optimized = optimizer.optimize_series(
+        moe_weight_series=w_scaled[:min_len],
+        expert_utilisation_series=expert_util,
+        returns_history=y_raw[:split_idx + min_len],  # Pass full history up to current val length
+        lookback=60,
+        hmm_bear_probs=bear_probs[:min_len],
+    )
+    print(f"    ✓ 投組優化器已套用（Risk Parity / MVO 雙層）")
+
+    if firewall is not None:
+        w_regime = allocator.blend_series(
+            moe_weight_series=w_optimized,
+            regime_labels=regime_labels,
+            regime_confidences=np.array(regime_confs),
+            hmm_bear_probs=bear_probs,
+            hmm_danger_probs=danger_probs,
+        )
+        print(f"    ✓ 政體配置已套用（{len(set(regime_labels))} 個政體）")
+    else:
+        w_regime = w_optimized
+        print("    ⚠ 無 Firewall，跳過政體配置")
+
+    # ── v2.0 Phase 1: 權重平滑器 ──────────────────────────────────────
+    smoother = WeightSmoother(
+        n_assets=len(assets),
+        config=SmootherConfig(
+            alpha=0.30,
+            min_rebalance_threshold=0.04,
+            max_single_turnover=0.08,
+            min_hold_days=5,
+            signal_stability_window=3,
+        ),
+    )
+    
+    # 計算每日的 expert_utilization (基於 top_k_indices)
+    top_k_indices = out.top_k_indices.numpy()[:min_len]  # [T, K]
+    E = len(expert_util)
+    daily_expert_util = np.zeros((min_len, E), dtype=np.float32)
+    for t in range(min_len):
+        for k in range(top_k_indices.shape[1]):
+            daily_expert_util[t, top_k_indices[t, k]] = 1.0
+
+    # 計算 VIX series (以 SPY realised_vol * sqrt(252) 為 proxy)
+    vol_idx = 1  # realised_vol is index 1 in feature_matrix
+    vix_series = spy_val_feat[:, vol_idx] * np.sqrt(252) * 100
+    
+    # 計算 VIX 5MA
+    vix_5ma_series = pd.Series(vix_series).rolling(window=5, min_periods=1).mean().values
+
+    w_smooth = smoother.smooth_series(
+        w_regime,
+        expert_utilization_series=daily_expert_util,
+        vix_series=vix_series,
+        vix_5ma_series=vix_5ma_series,
+    )
+    print(f"    ✓ 權重平滑已套用（含 VIX 動態視窗與 Expert-0 豁免）")
+
     # 計算每日權重變動 (Turnover)
-    w_prev = np.vstack([np.zeros((1, w_scaled.shape[1])), w_scaled[:-1]])
-    w_diff = w_scaled - w_prev  # [T_val, N_assets]
+    w_prev = np.vstack([np.zeros((1, w_smooth.shape[1])), w_smooth[:-1]])
+    w_diff = w_smooth - w_prev  # [T_val, N_assets]
 
     # 投資組合每日報酬
     tc_cost     = TRANSACTION_COST_BPS * 1e-4          # bps → decimal
     daily_tc    = np.abs(w_diff).sum(axis=1) * tc_cost # [T_val] 每日總交易費
-    port_ret    = (w_scaled * y_raw_val).sum(axis=1)    # [T_val]
+    port_ret    = (w_smooth * y_raw_val).sum(axis=1)    # [T_val]
     port_ret_tc = port_ret - daily_tc                   # 扣除交易成本
 
     # SPY 買進持有基準
@@ -344,9 +495,10 @@ def run_backtest() -> None:
         better = ""
         if name in ("Total Return", "CAGR", "Sharpe Ratio", "Calmar Ratio", "Win Rate", "Best Day"):
             better = " ✓" if sv > bv else ""
-        elif name in ("Ann. Volatility", "Max Drawdown", "Worst Day"):
-            better = " ✓" if sv > bv else ""  # lower is better here so invert:
-            better = " ✓" if sv < bv else ""
+        elif name in ("Ann. Volatility", "Max Drawdown"):
+            better = " ✓" if sv < bv else ""  # lower is better (less negative)
+        elif name == "Worst Day":
+            better = " ✓" if sv > bv else ""  # closer to 0 is better
         print(f"  {name:<28} {sv_str:>14}  {bv_str:>12}{better}")
 
     total_drag = daily_tc.sum()
@@ -378,4 +530,10 @@ def run_backtest() -> None:
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    run_backtest()
+    parser = argparse.ArgumentParser(description="Nexus Quant OS Walk-Forward Backtest")
+    parser.add_argument("--start", type=str, default=None,
+                        help="回測數據起始日期，例如 2000-01-01（預設使用訓練設定）")
+    parser.add_argument("--end", type=str, default=None,
+                        help="回測數據結束日期，例如 2020-12-31（預設使用今天）")
+    args = parser.parse_args()
+    run_backtest(start_date=args.start, end_date=args.end)

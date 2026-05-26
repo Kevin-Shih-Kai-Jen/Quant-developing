@@ -22,10 +22,16 @@ from nexus_quant_os.training.train_moe import (
     ASSET_UNIVERSE, DATA_START, FRED_API_KEY,
     build_daily_dataset, find_latest_checkpoint, load_checkpoint
 )
-from main import engineer_features
+from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
 import pandas as pd
 import numpy as np
 import torch
+
+from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
+from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
+from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+from nexus_quant_os.llm.sentiment_aggregator import SentimentAggregator
+from nexus_quant_os.llm.news_fetcher import NewsFetcher
 
 # Initialize Logger
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +51,14 @@ app.add_middleware(
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ── v2.0: 全域平滑器和配置器狀態（跨請求保持） ─────────────────────
+_smoother: WeightSmoother | None = None
+_allocator: RegimeAllocator | None = None
+_last_assets: list[str] | None = None  # 追蹤 assets 變化以重建 allocator/smoother
+_optimizer: PortfolioOptimizer | None = None
+_sentiment: SentimentAggregator | None = None
+_news_fetcher: NewsFetcher | None = None
 
 
 class PipelineResponse(BaseModel):
@@ -99,8 +113,8 @@ async def run_pipeline():
             frames.append(aligned)
         aligned_df = pd.concat(frames, ignore_index=True).sort_values(["asset_id", "timestamp"]).reset_index(drop=True)
 
-        # 3. Dataset Construction
-        X, _, _, dates, assets = build_daily_dataset(aligned_df)
+        # 3. Dataset Construction（推論模式：保留最後一天）
+        X, y_norm, _, dates, assets = build_daily_dataset(aligned_df, inference_mode=True)
         if len(X) == 0:
             raise HTTPException(status_code=500, detail="Not enough data to construct features for today.")
 
@@ -127,7 +141,7 @@ async def run_pipeline():
         abs_sum = np.abs(raw_weights).sum() + 1e-8
         norm_weights = raw_weights / abs_sum
 
-        # 6. Risk Firewall (Loaded from Checkpoint)
+        # ── v2.0 Phase 2.5: Risk Firewall (Run before optimizer to get HMM state) ─────
         sp500_df = daily_prices[daily_prices["asset_id"] == "SPY"].copy()
         sp500_df.set_index("timestamp", inplace=True)
 
@@ -145,37 +159,157 @@ async def run_pipeline():
             raw_weights=norm_weights
         )
 
+        # ── v2.0 Phase 3: 投組優化器 (Risk Parity / Constrained MVO) ─────
+        global _optimizer, _sentiment, _allocator, _smoother, _last_assets
+        assets_list = list(assets)  # 提前定義，供下方 allocator 判斷使用
+        if _optimizer is None or _last_assets != assets_list:
+            _optimizer = PortfolioOptimizer(
+                n_assets=len(assets),
+                config=OptimizerConfig(
+                    max_single_weight=0.35,
+                    gross_exposure=1.0,
+                    min_cash=0.05,
+                    dispersion_threshold=0.45,
+                ),
+                asset_names=assets_list,
+            )
+        # 用最近 60 天報酬估計共變異數矩陣
+        if len(y_norm) >= 60:
+            cov_matrix = np.cov(y_norm[-60:], rowvar=False)
+        else:
+            cov_matrix = np.eye(len(assets)) * 0.01
+        optimized_weights = _optimizer.optimize(
+            moe_weights=norm_weights,
+            expert_utilisation=expert_util,
+            cov_matrix=cov_matrix,
+            hmm_bear_prob=firewall_result.hmm_bear_prob,
+        )
+
         # Apply Firewall Scaling
-        safe_weights = norm_weights * firewall_result.scale_factor
+        safe_weights = optimized_weights * firewall_result.scale_factor
+
+        # ── v2.0 Phase 5: LLM 情緒引擎調整（可選） ──────────────────────
+        sentiment_adjustment = 1.0  # 預設無調整
+        try:
+            if _sentiment is None:
+                _sentiment = SentimentAggregator(
+                    use_gemini=True,   # Gemini 2.0 Flash（主模型，免費 API）
+                    use_gemma=True,    # Gemma 4（備用模型，同一 API Key）
+                    use_deepseek=False,
+                )
+            # 即時財經新聞 RSS 抓取（30 分鐘快取）
+            global _news_fetcher
+            if _news_fetcher is None:
+                _news_fetcher = NewsFetcher(cache_ttl_seconds=1800)
+            live_headlines = _news_fetcher.fetch_latest(max_headlines=15)
+            logger.info("即時新聞標題: %d 條", len(live_headlines))
+            sentiment_result = _sentiment.get_daily_sentiment(
+                headlines=live_headlines
+            )
+            # 情緒極端時微調權重（±10% 範圍）
+            sentiment_adjustment = 1.0 + sentiment_result.sentiment_daily * 0.10
+            logger.info(
+                "情緒調整因子: %.4f (daily=%.4f)",
+                sentiment_adjustment, sentiment_result.sentiment_daily,
+            )
+        except Exception as e:
+            logger.warning("LLM 情緒引擎不可用，跳過調整: %s", e)
+            sentiment_adjustment = 1.0
+
+        safe_weights = safe_weights * sentiment_adjustment
+
+        # ── v2.0 Phase 2: 政體自適應配置 ─────────────────────────
+        # 若 assets 變化（不同 checkpoint），重建 allocator 和 smoother
+        if _last_assets != assets_list:
+            _allocator = None
+            _smoother = None
+            _last_assets = assets_list
+        if _allocator is None:
+            _allocator = RegimeAllocator(
+                assets=assets_list,
+                config=RegimeAllocatorConfig(
+                    min_confidence=0.65,
+                    max_prior_blend=0.25,
+                    transition_smoothing=0.8,
+                ),
+            )
+        regime_blended = _allocator.blend(
+            moe_weights=safe_weights,
+            regime_label=firewall_result.hmm_regime_label,
+            regime_confidence=max(
+                firewall_result.hmm_bear_prob,
+                firewall_result.hmm_danger_prob,
+            ),
+            hmm_bear_prob=firewall_result.hmm_bear_prob,
+            hmm_danger_prob=firewall_result.hmm_danger_prob,
+        )
+
+        # ── v2.0 Phase 1: 權重平滑器 ──────────────────────────────
+        if _smoother is None:
+            _smoother = WeightSmoother(
+                n_assets=len(assets),
+                config=SmootherConfig(
+                    alpha=0.30,
+                    min_rebalance_threshold=0.04,
+                    max_single_turnover=0.08,
+                    min_hold_days=5,
+                    signal_stability_window=3,
+                ),
+            )
+            
+        vol_idx = spy_feature_names.index("realised_vol")
+        latest_vol = spy_feature_matrix[-1, vol_idx]
+        vix_proxy = float(latest_vol * np.sqrt(252) * 100)
+        
+        if len(spy_feature_matrix) >= 5:
+            vol_5ma = spy_feature_matrix[-5:, vol_idx].mean()
+            vix_5ma = float(vol_5ma * np.sqrt(252) * 100)
+        else:
+            vix_5ma = vix_proxy
+        
+        final_weights = _smoother.smooth(
+            regime_blended,
+            expert_utilization=expert_util,
+            vix_value=vix_proxy,
+            vix_5ma=vix_5ma,
+        )
 
         # Formatting Output
         allocations = []
         for i, asset in enumerate(assets):
             rw = float(norm_weights[i])
-            sw = float(safe_weights[i])
+            sw = float(final_weights[i])
             action = "BUY" if sw > 0.05 else ("SELL" if sw < -0.05 else "HOLD")
             allocations.append({
                 "asset": asset,
                 "raw_weight": rw,
                 "scale": firewall_result.scale_factor,
+                "regime_weight": float(regime_blended[i]),
                 "safe_weight": sw,
                 "action": action
             })
 
         # Formatting Reasoning
+        # 使用實際執行日期（今天或上一個交易日），而非 dataset 的 dates[-1]
+        pipeline_date = pd.Timestamp.today().normalize()
+        # 若今天非交易日（週末），回退到上一個交易日
+        if pipeline_date.dayofweek >= 5:  # 5=週六, 6=週日
+            pipeline_date = pipeline_date - pd.tseries.offsets.BDay(1)
         reasoning = {
-            "date": latest_date.strftime("%Y-%m-%d"),
+            "date": pipeline_date.strftime("%Y-%m-%d"),
             "risk_tier": firewall_result.risk_tier.name,
             "scale_factor": firewall_result.scale_factor,
             "hmm_regime": firewall_result.hmm_regime_label,
             "hmm_extreme_prob": float(firewall_result.hmm_danger_prob),
-            "hmm_bear_prob": float(getattr(firewall_result, 'hmm_bear_prob', 0.0)),
+            "hmm_bear_prob": float(firewall_result.hmm_bear_prob),
             "ood_score": float(firewall_result.ood_combined_score),
             "ood_flagged": firewall_result.ood_is_flagged,
             "expert_utilization": {
                 f"Expert-{i}": float(u) for i, u in enumerate(expert_util)
             },
-            "firewall_reason": firewall_result.veto_reason
+            "firewall_reason": firewall_result.veto_reason,
+            "optimizer_mode": "RiskParity" if float(np.std(expert_util)) > 0.30 else "MVO",
+            "sentiment_adjustment": float(sentiment_adjustment),
         }
 
         return PipelineResponse(

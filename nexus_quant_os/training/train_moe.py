@@ -11,7 +11,7 @@ nexus_quant_os/training/train_moe.py — MoE Router 真實數據訓練腳本
               Expert-0（技術面）: 3 層 MLP，輸入 4 tech features × 7 assets = 28D
               Expert-1（總經面）: TabNet Sequential Attention，輸入 5 macro features × 7 assets = 35D
               Expert-2（泛化型）: 3 層 MLP，輸入全部 9 features × 7 assets = 63D
-    損失    : 0.5 × MSE + 0.3 × (−Sharpe) + 0.2 × AuxLoss
+    損失    : 0.40 × MSE + 0.30 × (−Sharpe) + 0.15 × AuxLoss + 0.15 × Turnover
     Epochs  : 200（含 Early Stopping，patience=30）
     優化器  : Adam + CosineAnnealingLR
     正則化  : weight_decay=1e-4, gradient clipping=1.0
@@ -61,13 +61,13 @@ logger = logging.getLogger("nexus_quant_os.training.train_moe")
 # 全域訓練常量
 # ═════════════════════════════════════════════════════════════════════
 
-ASSET_UNIVERSE  = ["AVGO", "GLD", "IWM", "NVDA", "QQQ", "SPY", "TLT"]  # 字母排序
-N_ASSETS        = len(ASSET_UNIVERSE)     # 7
+ASSET_UNIVERSE  = ["AVGO", "GLD", "IWM", "NVDA", "PSQ", "QQQ", "SH", "SHY", "SPY", "TLT"]  # 字母排序
+N_ASSETS        = len(ASSET_UNIVERSE)     # 10
 N_FEATURES      = 9                       # 每資產特徵數（v2: +yield_curve_slope）
-INPUT_DIM       = N_ASSETS * N_FEATURES   # 63 = 橫截面輸入維度
-OUTPUT_DIM      = N_ASSETS                # 7  = 投資組合權重維度
+INPUT_DIM       = N_ASSETS * N_FEATURES   # 90 = 橫截面輸入維度
+OUTPUT_DIM      = N_ASSETS                # 10  = 投資組合權重維度
 
-NUM_EXPERTS     = 3
+NUM_EXPERTS     = 4
 TOP_K           = 2
 HIDDEN_DIM      = 128   # MLP 第一隱藏層維度
 EPOCHS          = 200
@@ -77,13 +77,13 @@ WEIGHT_DECAY    = 1e-4
 PATIENCE        = 40
 TRAIN_RATIO     = 0.70
 VOL_LOOKBACK    = 20
-AUX_LOSS_COEFF  = 0.05  # 0.05 — 平衡負載 vs 學習信號（0.02 太弱 → Collapse，0.10 太強 → 學習受阻）
+AUX_LOSS_COEFF  = 0.10  # 0.15 — 平衡負載 vs 學習信號（強制 Router 分配路由給 Expert-0）
 
 CHECKPOINT_DIR  = _PROJECT_ROOT / "nexus_quant_os" / "models" / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 FRED_API_KEY    = os.environ.get("FRED_API_KEY", "")
-DATA_START      = "2020-01-02"
+DATA_START      = "2020-01-01"
 
 FEATURE_COLS = [
     "daily_return", "realised_vol", "high_low_spread", "volume_zscore",
@@ -181,11 +181,12 @@ def build_specialized_experts(
     hidden_dim: int = HIDDEN_DIM,
     dropout:    float = 0.1,
 ) -> nn.ModuleList:
-    """建構 3 個差異化 Expert：
+    """建構 4 個差異化 Expert：
 
     Expert-0（技術面 MLP）：4 tech features × 7 assets = 28D 輸入
     Expert-1（總經面 TabNet）：5 macro features × 7 assets = 35D 輸入
     Expert-2（泛化型 MLP）：全部 9 features × 7 assets = 63D 輸入
+    Expert-3（情緒面 MLP）：全部 9 features × 7 assets = 63D 輸入（窄 MLP，hidden=64）
     """
     # Expert-0: 技術面 — 價格、波動、成交量
     expert_0 = SpecializedExpert(
@@ -222,33 +223,51 @@ def build_specialized_experts(
         ),
     )
 
-    return nn.ModuleList([expert_0, expert_1, expert_2])
+    # Expert-3: 情緒面 — 使用全部特徵，但更窄的 MLP (hidden=64)
+    # 在 live 推論時，LLM 情緒信號作為外部調整信號加成到最終權重上
+    # 訓練時完全靠量化特徵學習，讓 Gating Network 自行分配路由
+    expert_3 = SpecializedExpert(
+        feature_indices=all_indices,  # 63D（同 Expert-2）
+        expert_network=build_expert_mlp(
+            input_dim=INPUT_DIM,  # 63
+            output_dim=output_dim,
+            hidden_dim=64,        # 窄 MLP，避免與 Expert-2 冗餘
+            dropout=dropout * 1.5,  # 稍高 dropout 以增加差異化
+        ),
+    )
+
+    return nn.ModuleList([expert_0, expert_1, expert_2, expert_3])
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 損失函數：0.5×MSE + 0.3×(−Sharpe) + 0.2×Aux
+# 損失函數：0.40×MSE + 0.30×(−Sharpe) + 0.15×Aux + 0.15×Turnover
 # ═════════════════════════════════════════════════════════════════════
 
 class CombinedPortfolioLoss(nn.Module):
-    """可微分組合損失函數。
+    """可微分組合損失函數 v2.0。
 
     Primary   : MSE(predicted_weights, normalized_forward_returns)
     Secondary : −Sharpe(portfolio_returns)   [最大化 Sharpe]
     Auxiliary : MoE 負載平衡損失             [防止 Expert Collapse]
+    Turnover  : 換手率懲罰                   [降低交易成本]
     """
 
     def __init__(
         self,
-        mse_weight:    float = 0.5,
-        sharpe_weight: float = 0.3,
-        aux_weight:    float = 0.2,
-        eps:           float = 1e-8,
+        mse_weight:      float = 0.40,
+        sharpe_weight:   float = 0.30,
+        aux_weight:      float = 0.15,
+        turnover_weight: float = 0.15,
+        turnover_coeff:  float = 1.0,
+        eps:             float = 1e-8,
     ) -> None:
         super().__init__()
-        self.mse_weight    = mse_weight
-        self.sharpe_weight = sharpe_weight
-        self.aux_weight    = aux_weight
-        self.eps           = eps
+        self.mse_weight      = mse_weight
+        self.sharpe_weight   = sharpe_weight
+        self.aux_weight      = aux_weight
+        self.turnover_weight = turnover_weight
+        self.turnover_coeff  = turnover_coeff
+        self.eps             = eps
 
     def forward(
         self,
@@ -256,6 +275,7 @@ class CombinedPortfolioLoss(nn.Module):
         y_norm:         torch.Tensor,  # [B, N_assets] (橫截面標準化，用於 MSE 擬合)
         y_raw:          torch.Tensor,  # [B, N_assets] (未標準化的真實前瞻報酬，用於 Sharpe)
         aux_loss:       torch.Tensor,  # scalar
+        prev_weights:   torch.Tensor | None = None,  # [B, N_assets] 前一天的預測權重
     ) -> tuple[torch.Tensor, dict[str, float]]:
 
         y_pred = predicted_weights
@@ -271,18 +291,32 @@ class CombinedPortfolioLoss(nn.Module):
         sharpe    = mean_ret / std_ret
         sharpe_loss = -sharpe  # 最小化負 Sharpe = 最大化 Sharpe
 
+        # ── Turnover penalty ─────────────────────────────────────
+        # 計算相鄰時間步之間的權重變動（懲罰頻繁換倉）
+        if prev_weights is not None:
+            turnover = torch.abs(y_pred - prev_weights).sum(dim=1).mean()
+        else:
+            # Batch 內相鄰樣本的差異作為近似
+            if y_pred.shape[0] > 1:
+                turnover = torch.abs(y_pred[1:] - y_pred[:-1]).sum(dim=1).mean()
+            else:
+                turnover = torch.tensor(0.0, device=y_pred.device)
+        turnover_loss = turnover * self.turnover_coeff
+
         # ── Total ─────────────────────────────────────────────────
         total = (
-            self.mse_weight    * mse         +
-            self.sharpe_weight * sharpe_loss +
-            self.aux_weight    * aux_loss
+            self.mse_weight      * mse           +
+            self.sharpe_weight   * sharpe_loss   +
+            self.aux_weight      * aux_loss      +
+            self.turnover_weight * turnover_loss
         )
 
         return total, {
-            "mse":    mse.item(),
-            "sharpe": sharpe.item(),
-            "aux":    aux_loss.item() if hasattr(aux_loss, 'item') else float(aux_loss),
-            "total":  total.item(),
+            "mse":      mse.item(),
+            "sharpe":   sharpe.item(),
+            "aux":      aux_loss.item() if hasattr(aux_loss, 'item') else float(aux_loss),
+            "turnover": turnover_loss.item(),
+            "total":    total.item(),
         }
 
 
@@ -310,13 +344,14 @@ def _add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["volume_zscore"] = (df["volume"] - vol_mean) / (vol_std + 1e-8)
 
-    # 總經特徵：ffill → bfill → fillna(0)
+    # 總經特徵：ffill → fillna(0)（殘留的 NaN 以 0 填補）
     for col in MACRO_COLS:
         if col in df.columns:
             df[col] = (
                 df.groupby("asset_id")[col]
                 .transform(lambda x: x.ffill())
             )
+            df[col] = df[col].fillna(0.0)
         else:
             df[col] = 0.0
 
@@ -328,30 +363,39 @@ def _add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_daily_dataset(
     aligned_df: pd.DataFrame,
+    inference_mode: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DatetimeIndex, list[str]]:
     """構建橫截面日度訓練數據集。
 
     關鍵設計：
-        - 每天將所有 N_assets 資產的 8 個特徵橫向拼接
-          → X[t] shape = [N_assets × N_features] = [56]
+        - 每天將所有 N_assets 資產的 9 個特徵橫向拼接
+          → X[t] shape = [N_assets × N_features] = [63]
         - 目標為下一個交易日的橫截面標準化報酬
           → y[t] = r[t+1] / Σ|r[t+1]|   shape = [N_assets] = [7]
         - 只保留所有資產均有完整數據的日期
 
     Parameters
     ----------
-    aligned_df : pd.DataFrame   enforce_pit_alignment 輸出
+    aligned_df    : pd.DataFrame   enforce_pit_alignment 輸出
+    inference_mode : bool           推論模式：不要求 forward_return，
+                                    保留最後一天（最新交易日）的數據
 
     Returns
     -------
-    X      : np.ndarray  [T_dates, 56]
+    X      : np.ndarray  [T_dates, 63]
     y      : np.ndarray  [T_dates, 7]   (橫截面標準化前瞻報酬)
     y_raw  : np.ndarray  [T_dates, 7]   (未標準化的真實前瞻報酬)
     dates  : pd.DatetimeIndex
     assets : list[str]                  (字母排序，與欄位順序一致)
     """
     df = _add_technical_features(aligned_df)
-    df = df.dropna(subset=TECH_COLS + ["forward_return"]).reset_index(drop=True)
+
+    # 推論模式：只要求技術指標欄位非 NaN，不要求 forward_return
+    # 這樣最後一天（尚無明天報酬）不會被丟棄
+    if inference_mode:
+        df = df.dropna(subset=TECH_COLS).reset_index(drop=True)
+    else:
+        df = df.dropna(subset=TECH_COLS + ["forward_return"]).reset_index(drop=True)
 
     # 確保使用字母排序（與訓練時一致）
     assets = sorted(df["asset_id"].unique().tolist())
@@ -370,7 +414,7 @@ def build_daily_dataset(
     valid_dates: list         = []
 
     for date in common_dates:
-        day_df = df[df["timestamp"].dt.normalize() == date].set_index("asset_id")
+        day_df = df[df["timestamp"].dt.normalize() == date].drop_duplicates(subset="asset_id").set_index("asset_id")
 
         if not all(a in day_df.index for a in assets):
             continue
@@ -393,7 +437,10 @@ def build_daily_dataset(
                 break
 
             fwd = float(row.get("forward_return", np.nan))
-            if np.isnan(fwd) or np.isinf(fwd):
+            # 推論模式：forward_return 為 NaN 是正常的（最後一天無明日報酬）
+            if inference_mode and (np.isnan(fwd) or np.isinf(fwd)):
+                fwd = 0.0  # 填 0 作為佔位符，推論時不會用到 y
+            elif np.isnan(fwd) or np.isinf(fwd):
                 valid = False
                 break
 
@@ -405,8 +452,12 @@ def build_daily_dataset(
             y_rows.append(ret_row)
             valid_dates.append(date)
 
-    X = np.array(X_rows, dtype=np.float32)   # [T_dates, 56]
+    X = np.array(X_rows, dtype=np.float32)   # [T_dates, 63]
     y = np.array(y_rows, dtype=np.float32)   # [T_dates, 7]
+
+    # 安全護欄：確保 y 至少是 2D（防止單日期邊界情況）
+    if y.ndim == 1:
+        y = y.reshape(-1, len(assets))
 
     # 橫截面標準化：每天的報酬除以絕對值之和
     # 結果：sum(|y[t]|) = 1，可直接解讀為市場中性投資組合權重
@@ -423,7 +474,7 @@ def build_daily_dataset(
 
 def compute_val_metrics(
     router:  QuantMoERouter,
-    X_val:   np.ndarray,       # [T_val, 56]
+    X_val:   np.ndarray,       # [T_val, 63]
     y_val:   np.ndarray,       # [T_val, 7]
     y_raw_val: np.ndarray,     # [T_val, 7]
     scaler:  StandardScaler,
@@ -456,10 +507,10 @@ def compute_val_metrics(
 # ═════════════════════════════════════════════════════════════════════
 
 def train_moe_router(
-    X_train: np.ndarray,   # [T_train, 56]
+    X_train: np.ndarray,   # [T_train, 63]
     y_train: np.ndarray,   # [T_train, 7]
     y_raw_train: np.ndarray,
-    X_val:   np.ndarray,   # [T_val, 56]
+    X_val:   np.ndarray,   # [T_val, 63]
     y_val:   np.ndarray,   # [T_val, 7]
     y_raw_val: np.ndarray,
     epochs:     int = 200,
@@ -506,7 +557,8 @@ def train_moe_router(
         optimizer, T_max=epochs, eta_min=LR * 0.05
     )
     criterion = CombinedPortfolioLoss(
-        mse_weight=0.5, sharpe_weight=0.3, aux_weight=0.2
+        mse_weight=0.40, sharpe_weight=0.30, aux_weight=0.15,
+        turnover_weight=0.15, turnover_coeff=1.0,
     )
 
     # ── Early Stopping 狀態 ────────────────────────────────────────
@@ -527,9 +579,10 @@ def train_moe_router(
     print(f"  Expert-0  : MLP (Tech, {len(TECH_FEATURE_INDICES)}D)")
     print(f"  Expert-1  : TabNet (Macro, {len(MACRO_FEATURE_INDICES)}D)")
     print(f"  Expert-2  : MLP (All, {INPUT_DIM}D)")
+    print(f"  Expert-3  : MLP (Sentiment, {INPUT_DIM}D, narrow)")
     print(f"  Params    : {total_params:,}")
     print(f"  Input     : {INPUT_DIM}D  ({N_ASSETS} assets × {N_FEATURES} features)")
-    print(f"  Loss      : 0.5×MSE + 0.3×(−Sharpe) + 0.2×Aux  |  aux_coeff={AUX_LOSS_COEFF}")
+    print(f"  Loss      : 0.40×MSE + 0.30×(−Sharpe) + 0.15×Aux + 0.15×Turnover  |  aux_coeff={AUX_LOSS_COEFF}")
     print(f"  Train     : {T} days  |  Val : {len(X_val)} days")
     print(f"  Optimizer : Adam(lr={LR})  CosineAnnealing  wd={WEIGHT_DECAY}")
     print(f"  EarlyStop : patience={PATIENCE}")
@@ -544,37 +597,60 @@ def train_moe_router(
     for epoch in range(1, epochs + 1):
         router.train()
 
-        # Mini-batch（每 epoch 隨機洗牌）
-        perm  = torch.randperm(T, device=device)
-        X_shf = X_t[perm]
-        y_shf = y_t[perm]
-        y_raw_shf = y_raw_t[perm]
+        # ── v2.0 時序感知訓練：不再打亂，保留時序以計算真實 Turnover ──
+        # 為了 Turnover Penalty 的準確性，使用時間順序而非隨機排列
+        X_seq = X_t
+        y_seq = y_t
+        y_raw_seq = y_raw_t
 
         batch_losses:  list[float] = []
         batch_mse:     list[float] = []
         batch_sharpe:  list[float] = []
+        batch_turnover: list[float] = []
+
+        # 追蹤前一個 batch 的最後一組預測權重
+        prev_batch_last_weights: torch.Tensor | None = None
 
         for start in range(0, T, batch_size):
-            X_b = X_shf[start : start + batch_size]  # [B, 56]
-            y_b = y_shf[start : start + batch_size]  # [B, 7]
-            y_raw_b = y_raw_shf[start : start + batch_size]
+            X_b = X_seq[start : start + batch_size]  # [B, 63]
+            y_b = y_seq[start : start + batch_size]  # [B, 7]
+            y_raw_b = y_raw_seq[start : start + batch_size]
 
             optimizer.zero_grad()
             out: RoutingOutput = router(X_b)
 
+            # 構建 prev_weights：用前一步的預測作為「昨天的持倉」
+            curr_w = out.combined_output  # [B, 7]
+            if prev_batch_last_weights is not None:
+                # 將前一 batch 的最後權重與當前 batch 的前 B-1 個拼接
+                prev_w = torch.cat([
+                    prev_batch_last_weights.unsqueeze(0),
+                    curr_w[:-1].detach(),
+                ], dim=0)  # [B, 7]
+            else:
+                prev_w = torch.cat([
+                    torch.zeros(1, curr_w.shape[1], device=device),
+                    curr_w[:-1].detach(),
+                ], dim=0)  # [B, 7]
+
             total_loss, metrics = criterion(
-                out.combined_output,  # [B, 7]
+                curr_w,               # [B, 7]
                 y_b,                  # [B, 7]
                 y_raw_b,
                 out.aux_loss,
+                prev_weights=prev_w,  # v2.0: 換手率懲罰
             )
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(router.parameters(), max_norm=1.0)
             optimizer.step()
 
+            # 更新前一 batch 的尾端權重（detach 避免計算圖膨脹）
+            prev_batch_last_weights = curr_w[-1].detach()
+
             batch_losses.append(metrics["total"])
             batch_mse.append(metrics["mse"])
             batch_sharpe.append(metrics["sharpe"])
+            batch_turnover.append(metrics["turnover"])
 
         scheduler.step()
 
@@ -702,6 +778,7 @@ def load_checkpoint(
     scaler.mean_  = np.array(ckpt["scaler_mean"],  dtype=np.float64)
     scaler.scale_ = np.array(ckpt["scaler_scale"], dtype=np.float64)
     scaler.var_   = scaler.scale_ ** 2
+    scaler.n_features_in_ = len(scaler.mean_)
     scaler.n_samples_seen_ = 1000  # Dummy value for strict sklearn API compliance
 
     assets = ckpt.get("assets", ASSET_UNIVERSE)
@@ -843,7 +920,7 @@ if __name__ == "__main__":
     print(f"    Hit Rate : {val_m['hit_rate']:.1%}")
 
     print("\n>>> [6/5] 訓練 IntelligentRiskFirewall...")
-    from main import engineer_features
+    from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
     # 取出 SPY 並過濾日期，使其只對訓練期的數據擬合
     spy_df = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
     spy_feat_matrix, _ = engineer_features(spy_df)
