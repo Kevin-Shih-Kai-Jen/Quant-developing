@@ -263,6 +263,7 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 | [README.md](README.md) | 專案總覽與快速入門 |
 | [DEVELOPMENT_JOURNAL.md](DEVELOPMENT_JOURNAL.md) | 本文件 — 完整開發歷程 |
 | [ROADMAP.md](ROADMAP.md) | 未來功能路線圖 |
+| [docs/TECHNICAL_ARCHITECTURE_RESEARCH.md](docs/TECHNICAL_ARCHITECTURE_RESEARCH.md) | Deep Think 深度技術架構研究 |
 | [audit_report_data_integrity.md](audit_report_data_integrity.md) | 數據完整性審計報告 |
 | [backtest_report_2020_2026_OOS.md](backtest_report_2020_2026_OOS.md) | 2020-2026 OOS 回測報告 |
 
