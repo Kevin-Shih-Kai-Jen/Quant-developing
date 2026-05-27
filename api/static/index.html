@@ -392,6 +392,7 @@
             font-size: 0.9rem;
             font-weight: 600;
             color: var(--text-primary);
+            word-break: break-all;
         }
 
         .asset-badges {
@@ -1544,7 +1545,15 @@
                 const allocs = data.allocations || data.target_allocations;
                 html += '<h4 style="font-size:0.9rem;font-weight:700;margin-bottom:12px;color:var(--cyan);">📊 目標配置</h4>';
                 html += '<table class="alloc-table"><thead><tr><th>標的</th><th>配置比例</th></tr></thead><tbody>';
-                if (typeof allocs === 'object') {
+                if (Array.isArray(allocs)) {
+                    allocs.forEach(item => {
+                        const sym = item.asset || item.symbol || 'Unknown';
+                        const weight = item.safe_weight ?? item.weight ?? item.regime_weight ?? 0;
+                        const pct = (typeof weight === 'number') ? (weight * 100).toFixed(1) + '%' : weight;
+                        const action = item.action ? ` <span style="color:var(--text-muted);font-size:0.8em">(${item.action})</span>` : '';
+                        html += `<tr><td class="symbol-cell">${sym}</td><td>${pct}${action}</td></tr>`;
+                    });
+                } else if (typeof allocs === 'object') {
                     Object.entries(allocs).forEach(([sym, weight]) => {
                         const pct = (typeof weight === 'number') ? (weight * 100).toFixed(1) + '%' : weight;
                         html += `<tr><td class="symbol-cell">${sym}</td><td>${pct}</td></tr>`;
