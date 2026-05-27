@@ -2,11 +2,14 @@
 nexus_quant_os/advisor — AI Financial Advisor Agent
 ====================================================
 
-Conversational agent powered by Google Antigravity SDK that provides
-portfolio insights, records personal financial context, and performs
-multimodal analysis of brokerage screenshots.
+Two implementations:
+- ``advisor_v2.GeminiAdvisor``: Standalone Gemini 2.5 Flash (recommended)
+- ``agent.NexusAdvisor``: Google Antigravity SDK (requires extra deps)
 """
 
-from nexus_quant_os.advisor.agent import NexusAdvisor
-
-__all__ = ["NexusAdvisor"]
+# Import the standalone version by default (no heavy SDK dependency)
+try:
+    from nexus_quant_os.advisor.advisor_v2 import GeminiAdvisor
+    __all__ = ["GeminiAdvisor"]
+except ImportError:
+    __all__ = []
