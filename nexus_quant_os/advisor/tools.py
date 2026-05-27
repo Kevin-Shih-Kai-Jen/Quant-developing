@@ -17,7 +17,16 @@ import sqlite3
 from pathlib import Path
 
 import yfinance
-from google.antigravity import ToolContext
+
+try:
+    from google.antigravity import ToolContext
+except ImportError:
+    # SDK not installed — define a minimal protocol for type hints / tests
+    from typing import Any
+    class ToolContext:  # type: ignore[no-redef]
+        """Stub for when google.antigravity SDK is not installed."""
+        def get_state(self, key: str, default: Any = None) -> Any: ...
+        def set_state(self, key: str, value: Any) -> None: ...
 
 logger = logging.getLogger("nexus_quant_os.advisor.tools")
 

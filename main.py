@@ -152,7 +152,8 @@ def load_real_market_data() -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """
     if not FRED_API_KEY:
         logger.warning("FRED_API_KEY 未設定，使用合成數據模式。")
-        return _generate_synthetic_fallback(), "SYNTHETIC"
+        prices, macro = _generate_synthetic_fallback()
+        return prices, macro, "SYNTHETIC"
 
     try:
         end = DATA_END or pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
@@ -166,7 +167,8 @@ def load_real_market_data() -> tuple[pd.DataFrame, pd.DataFrame, str]:
 
     except Exception as exc:
         logger.error("真實數據載入失敗: %s — fallback 至合成數據", exc)
-        return _generate_synthetic_fallback(), "SYNTHETIC"
+        prices, macro = _generate_synthetic_fallback()
+        return prices, macro, "SYNTHETIC"
 
 
 def _generate_synthetic_fallback(
@@ -474,7 +476,7 @@ def run_pipeline() -> None:
         print(f"    device       : {live_tensor.device}")
 
         with torch.no_grad():
-            routing_result: RoutingOutput = router(live_tensor)
+            routing_result = router(live_tensor)
 
         raw_weights_tensor = routing_result.combined_output[-1]
         raw_weights        = raw_weights_tensor.cpu().numpy()

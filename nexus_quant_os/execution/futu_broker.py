@@ -64,8 +64,7 @@ logger = logging.getLogger("nexus_quant_os.execution.futu_broker")
 # US Eastern timezone
 try:
     from zoneinfo import ZoneInfo
-
-    _ET = ZoneInfo("America/New_York")
+    _ET: Any = ZoneInfo("America/New_York")
 except ImportError:
     _ET = timezone(timedelta(hours=-4))
 

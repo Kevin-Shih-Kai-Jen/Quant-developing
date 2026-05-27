@@ -23,6 +23,11 @@ Author : Nexus Quant OS — Risk Engineering Division
 from __future__ import annotations
 
 import logging
+from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
+
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -131,7 +136,7 @@ class WeightSmoother:
         if max_w <= 1:
             # 如果最大視窗都 <= 1，則直接全部放行 (注意：這裡如果是 array，可能有部分 > 1)
             # 但為了簡化，如果傳入標量 <=1，直接放行
-            if np.isscalar(dynamic_window) and dynamic_window <= 1:
+            if isinstance(dynamic_window, (int, float)) and dynamic_window <= 1:
                 return np.ones(self.n_assets, dtype=bool)
 
         # 記錄信號方向（+1/-1/0）
@@ -148,7 +153,7 @@ class WeightSmoother:
         if np.isscalar(dynamic_window):
             dyn_w_array = np.full(self.n_assets, dynamic_window, dtype=int)
         else:
-            dyn_w_array = dynamic_window
+            dyn_w_array = np.asarray(dynamic_window, dtype=int)
 
         # 對每個資產個別判斷
         for i in range(self.n_assets):

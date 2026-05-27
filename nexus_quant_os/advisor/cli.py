@@ -22,7 +22,10 @@ import asyncio
 import os
 from pathlib import Path
 
-from google.antigravity.types import Image
+try:
+    from google.antigravity.types import Image
+except ImportError:
+    Image = None  # type: ignore[assignment,misc]
 
 from nexus_quant_os.advisor.agent import NexusAdvisor
 

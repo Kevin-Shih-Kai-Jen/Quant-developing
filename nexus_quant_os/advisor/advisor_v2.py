@@ -191,7 +191,7 @@ class GeminiAdvisor:
         try:
             response = self._client.models.generate_content(
                 model=self._model,
-                contents=self._history,
+                contents=self._history,  # type: ignore[arg-type]
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
                     temperature=0.7,

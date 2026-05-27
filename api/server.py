@@ -11,8 +11,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv
+# Load .env file from the root directory so API keys are available
+load_dotenv(_ROOT / ".env")
 
 from nexus_quant_os.data_pipelines.data_loader import load_all_data
 from nexus_quant_os.data_pipelines.aligner import enforce_pit_alignment

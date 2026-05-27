@@ -17,8 +17,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import AsyncGenerator
 
-from google.antigravity import Agent, LocalAgentConfig
-from google.antigravity.types import TemplatedSystemInstructions
+try:
+    from google.antigravity import Agent, LocalAgentConfig
+    from google.antigravity.types import TemplatedSystemInstructions
+    _HAS_SDK = True
+except ImportError:
+    _HAS_SDK = False
 
 from nexus_quant_os.advisor.tools import (
     get_current_portfolio,
@@ -50,6 +54,12 @@ class NexusAdvisor:
         Args:
             conversation_id: Optional ID to resume a previous conversation.
         """
+        if not _HAS_SDK:
+            raise ImportError(
+                "google-antigravity SDK is not installed. "
+                "Install it with: pip install google-antigravity"
+            )
+
         _ADVISOR_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
         # Fix S6: initialize conversation_id in __init__

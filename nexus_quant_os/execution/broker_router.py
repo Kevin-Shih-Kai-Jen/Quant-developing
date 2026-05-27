@@ -55,8 +55,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Using a simple fixed approach — production would use ``zoneinfo``.
 try:
     from zoneinfo import ZoneInfo
-
-    _ET = ZoneInfo("America/New_York")
+    _ET: Any = ZoneInfo("America/New_York")
 except ImportError:  # Python < 3.9 fallback
     _ET = timezone(timedelta(hours=-4))  # EDT approximation
 

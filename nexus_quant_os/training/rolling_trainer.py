@@ -527,6 +527,7 @@ class RollingTrainer:
         # ── 預載入所有模型 ────────────────────────────────────────
         models = {}
         for r in valid_results:
+            assert r.checkpoint_path is not None
             router, scaler, _, _ = load_checkpoint(r.checkpoint_path)
             models[r.window.val_end] = (router, scaler)
 

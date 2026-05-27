@@ -175,7 +175,8 @@ class SpecializedExpert(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: [B, 63] → 提取子集 → Expert 推論 → [B, 7]"""
-        x_subset = x[:, self.feature_indices]  # [B, subset_dim]
+        indices = getattr(self, "feature_indices").long()
+        x_subset = x[:, indices]  # [B, subset_dim]
         return self.network(x_subset)
 
 
@@ -926,7 +927,7 @@ if __name__ == "__main__":
     from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
     # 取出 SPY 並過濾日期，使其只對訓練期的數據擬合
     spy_df = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
-    spy_feat_matrix, _ = engineer_features(spy_df)
+    spy_feat_matrix, _feat_names = engineer_features(spy_df)
     train_spy_matrix = spy_feat_matrix[:split_idx]
 
     firewall = IntelligentRiskFirewall.from_configs(

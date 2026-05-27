@@ -333,16 +333,20 @@ class OODAnomalyDetector:
         AnomalyResult
         """
         self._check_fitted()
+        assert self._if_model is not None
+        assert self._ae_model is not None
         if features.ndim == 1:
             features = features.reshape(1, -1)
 
         # Scale
         X_scaled = self._scaler.transform(features)   # [B, F]
+        assert self._train_min is not None and self._train_max is not None
         X_01 = (X_scaled - self._train_min) / (self._train_max - self._train_min + 1e-8)
         X_01 = np.clip(X_01, 0.0, 1.0)                # [B, F]
 
         # Isolation Forest score
         raw_if    = self._if_model.decision_function(X_scaled)   # [B]
+        assert self._if_score_max is not None and self._if_score_min is not None
         if_range  = self._if_score_max - self._if_score_min + 1e-8
         if_score_01 = float(
             np.clip(

@@ -151,8 +151,8 @@ def print_equity_curve(
     SEP = "─" * 72
     print(f"\n  Equity Curve  ── ★ Strategy  ·· SPY Buy-and-Hold\n")
     print("  " + SEP)
-    for row in canvas[:-1]:
-        print("  " + "".join(str(c) for c in row))
+    for canvas_row in canvas[:-1]:
+        print("  " + "".join(str(c) for c in canvas_row))
 
     # X-axis: quarter labels
     x_labels = " " * 5

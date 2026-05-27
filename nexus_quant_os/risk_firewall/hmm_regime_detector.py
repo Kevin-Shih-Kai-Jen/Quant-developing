@@ -283,6 +283,7 @@ class MarketRegimeDetector:
             posterior as the "current" regime probability.
         """
         self._check_fitted()
+        assert self._hmm is not None
         if observation_window.ndim == 1:
             observation_window = observation_window.reshape(1, -1)
 
@@ -327,6 +328,7 @@ class MarketRegimeDetector:
         np.ndarray  shape: [T]
         """
         self._check_fitted()
+        assert self._hmm is not None
         posteriors   = self._hmm.predict_proba(observations)   # [T, N]
         danger_probs = np.zeros(len(posteriors))
         for t in range(len(posteriors)):
@@ -348,12 +350,14 @@ class MarketRegimeDetector:
     def transition_matrix(self) -> np.ndarray:
         """Learned transition matrix, shape [N, N]."""
         self._check_fitted()
+        assert self._hmm is not None
         return self._hmm.transmat_  # type: ignore[return-value]
 
     @property
     def emission_means(self) -> np.ndarray:
         """Emission means per state, shape [N, F]."""
         self._check_fitted()
+        assert self._hmm is not None
         return self._hmm.means_  # type: ignore[return-value]
 
 

@@ -301,11 +301,15 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
         return_matrix = np.column_stack([r[-min_len:] for r in returns_frames])
 
         optimizer = PortfolioOptimizer(
-            config=OptimizerConfig(max_weight=0.15),
+            n_assets=len(assets_sorted),
+            config=OptimizerConfig(max_single_weight=0.15),
         )
+        cov_matrix = np.cov(return_matrix, rowvar=False)
         optimized_weights = optimizer.optimize(
-            expected_returns=norm_weights,
-            return_matrix=return_matrix,
+            moe_weights=norm_weights,
+            expert_utilisation=np.zeros(1),
+            cov_matrix=cov_matrix,
+            returns_history=return_matrix,
         )
         opt_mode = "CVXPY-MVO"
     except Exception as exc:
