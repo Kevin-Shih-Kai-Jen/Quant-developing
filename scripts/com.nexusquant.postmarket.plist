@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    ═══════════════════════════════════════════════════════════════
+    com.nexusquant.postmarket — 收盤後持倉快照 + Discord 回報
+    ═══════════════════════════════════════════════════════════════
+    排程: 每日 AEST 07:10 (= EST ~16:10 / EDT ~17:10)
+    功能: 查詢帳戶狀態 → 發送持倉快照到 Discord
+    ═══════════════════════════════════════════════════════════════
+    -->
+
+    <key>Label</key>
+    <string>com.nexusquant.postmarket</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/coolguy/developer/nexus_quant_os &amp;&amp; source .venv/bin/activate &amp;&amp; set -a &amp;&amp; source .env &amp;&amp; set +a &amp;&amp; PYTHONPATH=. python3 scripts/post_market_check.py</string>
+    </array>
+
+    <!-- 每日 07:10 AEST 執行 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>10</integer>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/coolguy/developer/nexus_quant_os/logs/launchd_postmarket.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/coolguy/developer/nexus_quant_os/logs/launchd_postmarket_err.log</string>
+</dict>
+</plist>

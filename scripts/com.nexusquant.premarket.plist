@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    ═══════════════════════════════════════════════════════════════
+    com.nexusquant.premarket — 開盤前 Pipeline + 自動下單
+    ═══════════════════════════════════════════════════════════════
+    排程: 每日 AEST 00:25 (= EST ~09:25 / EDT ~10:25)
+    功能: 執行完整 pipeline → MoE 推論 → 風控 → Moomoo 下單
+
+    注意:
+    - 美國夏令時 (EDT, Mar-Nov) 時，此時為 EDT 10:25（開盤後1小時）
+    - 美國冬令時 (EST, Nov-Mar) 時，此時為 EST 09:25（開盤前5分鐘）
+    - 若需更精確，可手動在夏令時期間將 Hour 改為 23
+    ═══════════════════════════════════════════════════════════════
+    -->
+
+    <key>Label</key>
+    <string>com.nexusquant.premarket</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/coolguy/developer/nexus_quant_os/scripts/run_scheduled.sh</string>
+    </array>
+
+    <!-- 每日 00:25 AEST 執行 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>0</integer>
+        <key>Minute</key>
+        <integer>25</integer>
+    </dict>
+
+    <!-- 環境變數 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- 日誌輸出 -->
+    <key>StandardOutPath</key>
+    <string>/Users/coolguy/developer/nexus_quant_os/logs/launchd_premarket.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/coolguy/developer/nexus_quant_os/logs/launchd_premarket_err.log</string>
+</dict>
+</plist>

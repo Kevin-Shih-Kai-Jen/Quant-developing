@@ -287,7 +287,13 @@ def enforce_pit_alignment(
         right_ts_col = f"{timestamp_col}{right_timestamp_suffix}"
         right[right_ts_col] = right[timestamp_col]
 
-    # ── Step 5: Execute merge_asof — the core anti-bias mechanism ─
+    # ── Step 5a: Normalize datetime resolution (Pandas 2.2+ strictness)
+    #    merge_asof requires both merge keys to have identical datetime
+    #    resolution (e.g. both 'ns' or both 'us').  We force both to 'ns'.
+    left[timestamp_col] = pd.to_datetime(left[timestamp_col]).astype("datetime64[ns]")
+    right[timestamp_col] = pd.to_datetime(right[timestamp_col]).astype("datetime64[ns]")
+
+    # ── Step 5b: Execute merge_asof — the core anti-bias mechanism ─
     #
     #   direction='backward' is the NON-NEGOTIABLE parameter that
     #   guarantees the right-side key is always <= the left-side key.
