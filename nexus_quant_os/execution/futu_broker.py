@@ -171,6 +171,63 @@ class FutuBroker(BrokerBase):
             security_firm=self._security_firm,
         )
 
+    # ── Order hygiene ─────────────────────────────────────────────
+
+    def cancel_all_pending(self) -> int:
+        """Cancel all SUBMITTED (pending) orders in the SIMULATE account.
+
+        This prevents cash from being frozen by stale limit orders that
+        were placed outside market hours and never filled.
+
+        Returns
+        -------
+        int
+            Number of orders successfully cancelled.
+        """
+        ctx = None
+        cancelled = 0
+        try:
+            ctx = self._get_trade_ctx()
+            ret, orders = ctx.order_list_query(trd_env=self._TRD_ENV)
+            if ret != RET_OK:
+                logger.error("order_list_query failed: %s", orders)
+                return 0
+
+            pending = orders[orders["order_status"] == "SUBMITTED"]
+            if pending.empty:
+                logger.info("No pending orders to cancel")
+                return 0
+
+            logger.info(
+                "Found %d pending orders — cancelling to free cash",
+                len(pending),
+            )
+
+            for _, row in pending.iterrows():
+                order_id = str(row["order_id"])
+                code = str(row.get("code", "?"))
+                ret2, _ = ctx.modify_order(
+                    modify_order_op="CANCEL",
+                    order_id=order_id,
+                    qty=0,
+                    price=0,
+                    trd_env=self._TRD_ENV,
+                )
+                if ret2 == RET_OK:
+                    logger.info("Cancelled pending order: %s (id=%s)", code, order_id)
+                    cancelled += 1
+                else:
+                    logger.warning("Failed to cancel order %s", order_id)
+                time.sleep(0.5)  # rate limit
+
+        except Exception as exc:
+            logger.error("cancel_all_pending failed: %s", exc)
+        finally:
+            if ctx is not None:
+                ctx.close()
+
+        return cancelled
+
     # ── Symbol conversion ─────────────────────────────────────────
 
     @staticmethod

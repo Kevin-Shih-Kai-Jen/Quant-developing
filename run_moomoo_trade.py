@@ -341,6 +341,18 @@ def execute_on_moomoo(
         report.error = str(e)
         return report
 
+    # ── Clean up stale orders ─────────────────────────────────────
+    # Cancel any SUBMITTED orders that were placed outside market hours
+    # and never filled.  These freeze cash and cause negative balances.
+    print("  ▸ Cleaning up stale pending orders...")
+    n_cancelled = broker.cancel_all_pending()
+    if n_cancelled > 0:
+        print(f"    🧹 Cancelled {n_cancelled} stale order(s)")
+        import time
+        time.sleep(2)  # wait for account to update
+    else:
+        print("    ✅ No stale orders")
+
     # ── Pre-trade snapshot ────────────────────────────────────────
     account = broker.get_account()
     positions = broker.get_positions()
