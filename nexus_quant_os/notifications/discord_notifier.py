@@ -444,3 +444,38 @@ class DiscordNotifier:
                 "inline": False,
             })
         return self._send({"embeds": [embed]})
+
+    # ── Pre-Trade Health Report ───────────────────────────────────
+
+    def send_health_report(
+        self,
+        summary: str,
+        is_healthy: bool,
+        check_details: str,
+    ) -> bool:
+        """Send pre-trade health check results.
+
+        Parameters
+        ----------
+        summary : str
+            One-line summary (e.g. "5 OK, 1 warning, 0 critical").
+        is_healthy : bool
+            True if all critical checks passed.
+        check_details : str
+            Multi-line formatted check results.
+
+        Returns
+        -------
+        bool
+            True if sent.
+        """
+        embed: dict[str, Any] = {
+            "title": "🏥 Pre-Trade Health Check"
+                     + (" — PASSED" if is_healthy else " — ⛔ BLOCKED"),
+            "description": check_details[:4000],
+            "color": 0x2ecc71 if is_healthy else 0xe74c3c,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "footer": {"text": "Nexus Quant OS • Monitoring"},
+        }
+        return self._send({"embeds": [embed]})
+

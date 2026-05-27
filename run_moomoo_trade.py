@@ -33,6 +33,12 @@ from nexus_quant_os.notifications.discord_notifier import (
     TradeRecord,
     TradeReport,
 )
+from nexus_quant_os.monitoring.health_check import (
+    run_pre_trade_checks,
+    check_weight_sanity,
+    format_health_report,
+    Severity,
+)
 
 # ═══════════════════════════════════════════════════════════════════
 # 0. LOGGING
@@ -133,6 +139,31 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     report.n_features = feature_matrix.shape[1]
     print(f"    Features: {feature_matrix.shape}\n")
 
+    # ── HEALTH GATE 1: Data Quality (Layer 1) ────────────────────
+    print("  ▸ HEALTH CHECK: Data & feature quality...")
+    health = run_pre_trade_checks(
+        prices_df=daily_prices,
+        macro_df=macro_data,
+        feature_matrix=feature_matrix,
+        feature_names=feature_names,
+    )
+    for c in health.checks:
+        icon = "✅" if c.severity == Severity.OK else (
+            "⚠️" if c.severity == Severity.WARNING else "🚨"
+        )
+        print(f"    {icon} {c.name}: {c.message}")
+
+    if not health.is_healthy:
+        msg = format_health_report(health)
+        print(f"\n    🚨 CRITICAL health check failed — aborting pipeline")
+        report.error = f"Health check failed: {health.n_critical} critical issue(s)"
+        # Notify via Discord (will be called from __main__)
+        raise RuntimeError(
+            f"Pre-trade health gate FAILED: {health.n_critical} critical, "
+            f"{health.n_warnings} warnings.\n" + msg
+        )
+    print(f"    {health.summary()}\n")
+
     # ── STEP 4: Risk Firewall ─────────────────────────────────────
     print("  ▸ STEP 4: Training risk firewall...")
     spy_df = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
@@ -216,6 +247,20 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     raw_weights = routing_result.combined_output[-1].cpu().numpy()
     print(f"    Assets: {list(assets_sorted)}")
     print(f"    Raw weights: {np.round(raw_weights, 4)}\n")
+
+    # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
+    weight_check = check_weight_sanity(
+        raw_weights, asset_names=list(assets_sorted), max_single_weight=0.40,
+    )
+    icon = "✅" if weight_check.severity == Severity.OK else (
+        "⚠️" if weight_check.severity == Severity.WARNING else "🚨"
+    )
+    print(f"    {icon} {weight_check.name}: {weight_check.message}")
+
+    if weight_check.severity == Severity.CRITICAL:
+        report.error = f"Weight sanity CRITICAL: {weight_check.message}"
+        raise RuntimeError(f"Model weight sanity FAILED: {weight_check.message}")
+    print()
 
     # ── STEP 6: Firewall Evaluation ───────────────────────────────
     print("  ▸ STEP 6: Risk firewall evaluation...")
