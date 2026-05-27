@@ -1,10 +1,11 @@
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -100,24 +101,131 @@ class ChatResponse(BaseModel):
     conversation_id: str
 
 
-from nexus_quant_os.advisor.agent import NexusAdvisor
+# ═════════════════════════════════════════════════════════════════════
+# v3.0: Gemini AI Advisor (Standalone — no Antigravity SDK needed)
+# ═════════════════════════════════════════════════════════════════════
+
+_gemini_advisor = None
+
+
+def _get_advisor():
+    """Lazy-init GeminiAdvisor singleton."""
+    global _gemini_advisor
+    if _gemini_advisor is None:
+        from nexus_quant_os.advisor.advisor_v2 import GeminiAdvisor
+        _gemini_advisor = GeminiAdvisor()
+    return _gemini_advisor
+
 
 @app.post("/api/advisor/chat", response_model=ChatResponse)
 async def advisor_chat(req: ChatRequest):
-    """Conversational endpoint for the AI Financial Advisor."""
+    """Conversational AI Financial Advisor (Gemini 2.5 Flash)."""
     try:
-        advisor = NexusAdvisor(conversation_id=req.conversation_id)
-        response_text = await advisor.chat(req.message)
-        
-        # Depending on how the SDK returns conversation_id, ensure we get it
-        new_conv_id = getattr(advisor, "conversation_id", req.conversation_id) or ""
-        
-        return ChatResponse(
-            response=response_text,
-            conversation_id=new_conv_id
-        )
+        advisor = _get_advisor()
+        response_text = advisor.chat(req.message)
+        return ChatResponse(response=response_text, conversation_id="gemini-session")
     except Exception as e:
-        logger.error(f"Advisor chat error: {e}")
+        logger.error("Advisor chat error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/advisor/upload")
+async def advisor_upload(
+    file: UploadFile = File(...),
+    prompt: str = "請分析這張券商截圖，列出所有持倉",
+):
+    """Upload a broker screenshot for AI analysis."""
+    try:
+        advisor = _get_advisor()
+        suffix = Path(file.filename or "img.png").suffix
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            tmp_path = tmp.name
+
+        response_text = advisor.chat(prompt, image_path=tmp_path)
+        os.unlink(tmp_path)
+        return {"response": response_text}
+    except Exception as e:
+        logger.error("Advisor upload error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/advisor/profile")
+async def advisor_profile():
+    """Get stored user profile."""
+    try:
+        advisor = _get_advisor()
+        return {"profile": advisor.handle_profile()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# v3.0: Dashboard & Health Endpoints
+# ═════════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/dashboard")
+async def get_dashboard():
+    """Unified dashboard data: account + model + health summary."""
+    try:
+        from nexus_quant_os.advisor.pipeline_bridge import PipelineBridge
+        bridge = PipelineBridge()
+
+        account = bridge.get_account_status()
+        checkpoint = bridge.get_checkpoint_info()
+
+        return {
+            "account": account,
+            "model": checkpoint,
+            "assets": list(ASSET_UNIVERSE),
+        }
+    except Exception as e:
+        logger.error("Dashboard error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/health")
+async def get_health():
+    """Run pre-trade health checks and return results."""
+    try:
+        from nexus_quant_os.monitoring.health_check import (
+            run_pre_trade_checks, Severity,
+        )
+        from nexus_quant_os.data_pipelines.data_loader import load_all_data
+
+        end_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+        daily_prices, macro_data = load_all_data(
+            tickers=ASSET_UNIVERSE,
+            fred_api_key=FRED_API_KEY,
+            start=DATA_START,
+            end=end_str,
+        )
+
+        report = run_pre_trade_checks(
+            prices_df=daily_prices,
+            macro_df=macro_data,
+        )
+
+        checks = []
+        for c in report.checks:
+            checks.append({
+                "name": c.name,
+                "severity": c.severity.value,
+                "message": c.message,
+            })
+
+        return {
+            "is_healthy": report.is_healthy,
+            "summary": report.summary(),
+            "n_ok": report.n_ok,
+            "n_warnings": report.n_warnings,
+            "n_critical": report.n_critical,
+            "checks": checks,
+        }
+    except Exception as e:
+        logger.error("Health check error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
