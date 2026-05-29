@@ -750,6 +750,8 @@ def load_checkpoint(
     path: Path,
 ) -> tuple[QuantMoERouter, StandardScaler, list[str], Optional[IntelligentRiskFirewall]]:
     """從 checkpoint 重建 Router + StandardScaler + Firewall。"""
+    # SECURITY NOTE: weights_only=False allows arbitrary code execution.
+    # Only load checkpoints from trusted sources.
     ckpt      = torch.load(path, map_location="cpu", weights_only=False)
     cfg       = ckpt["router_config"]
     hidden    = ckpt.get("hidden_dim", HIDDEN_DIM)
@@ -796,6 +798,8 @@ def load_checkpoint(
 
     firewall = None
     if ckpt.get("firewall_bytes") is not None:
+        # SECURITY NOTE: pickle.loads can execute arbitrary code.
+        # Only load firewall bytes from trusted checkpoints.
         firewall = pickle.loads(ckpt["firewall_bytes"])
 
     return router, scaler, assets, firewall

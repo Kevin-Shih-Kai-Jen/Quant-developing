@@ -136,7 +136,7 @@ class WeightSmoother:
         if max_w <= 1:
             # 如果最大視窗都 <= 1，則直接全部放行 (注意：這裡如果是 array，可能有部分 > 1)
             # 但為了簡化，如果傳入標量 <=1，直接放行
-            if isinstance(dynamic_window, (int, float)) and dynamic_window <= 1:
+            if isinstance(dynamic_window, (int, float, np.integer, np.floating)) and dynamic_window <= 1:
                 return np.ones(self.n_assets, dtype=bool)
 
         # 記錄信號方向（+1/-1/0）

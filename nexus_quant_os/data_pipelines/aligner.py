@@ -84,6 +84,7 @@ class AlignmentAuditReport:
     total_price_rows: int = 0
     matched_rows: int = 0
     dropped_stale_rows: int = 0
+    actual_output_rows: int = 0
     max_drift_days_config: int = 0
     actual_max_drift_days: float = 0.0
     actual_mean_drift_days: float = 0.0
@@ -348,10 +349,13 @@ def enforce_pit_alignment(
     else:
         quality = AlignmentQuality.CRITICAL
 
+    actual_rows = len(aligned)
+
     audit = AlignmentAuditReport(
         total_price_rows=total,
         matched_rows=matched,
         dropped_stale_rows=dropped,
+        actual_output_rows=actual_rows,
         max_drift_days_config=max_drift_days,
         actual_max_drift_days=float(drift_series.max())  if drift_series is not None and len(drift_series) > 0 else 0.0,
         actual_mean_drift_days=float(drift_series.mean()) if drift_series is not None and len(drift_series) > 0 else 0.0,

@@ -145,7 +145,6 @@ class MarketRegimeDetector:
         self._is_fitted: bool = False
         # Maps HMM state index -> MarketRegime after post-hoc labelling
         self._state_to_regime: dict[int, int] = {}
-        self._regime_names: dict[int, str] = {}
 
     # -----------------------------------------------------------------
     # 3a. Training
@@ -252,9 +251,6 @@ class MarketRegimeDetector:
                 else:
                     self._state_to_regime[int(state)] = MarketRegime.BEAR_HIGH_VOL
 
-        self._regime_names = {
-            v: MarketRegime(v).name for v in self._state_to_regime.values()
-        }
         logger.info("State labelling: %s", self._state_to_regime)
 
     def _log_transition_matrix(self) -> None:
@@ -294,14 +290,14 @@ class MarketRegimeDetector:
         # Map HMM state indices to named regime indices
         regime_probs = np.zeros(len(MarketRegime))
         for state_idx, prob in enumerate(current_posterior):
-            regime_idx = self._state_to_regime.get(state_idx, state_idx)
+            regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
             if regime_idx < len(regime_probs):
                 regime_probs[regime_idx] += prob
 
         # Viterbi most likely path
         viterbi_states    = self._hmm.predict(observation_window)
         most_likely_state = int(viterbi_states[-1])
-        most_likely_regime = self._state_to_regime.get(most_likely_state, most_likely_state)
+        most_likely_regime = self._state_to_regime.get(most_likely_state, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
 
         danger_probability = float(
             sum(regime_probs[r] for r in DANGEROUS_REGIMES if r < len(regime_probs))
@@ -333,7 +329,7 @@ class MarketRegimeDetector:
         danger_probs = np.zeros(len(posteriors))
         for t in range(len(posteriors)):
             for state_idx, p in enumerate(posteriors[t]):
-                regime_idx = self._state_to_regime.get(state_idx, state_idx)
+                regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
                 if regime_idx in DANGEROUS_REGIMES:
                     danger_probs[t] += p
         return danger_probs

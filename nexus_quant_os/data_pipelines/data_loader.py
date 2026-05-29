@@ -156,6 +156,7 @@ def load_price_data(
 
             # yfinance 新版可能回傳 MultiIndex 欄位，統一壓平
             if isinstance(raw.columns, pd.MultiIndex):
+                # For single-ticker downloads, take the price-type level
                 raw.columns = raw.columns.get_level_values(0)
 
             df = pd.DataFrame({

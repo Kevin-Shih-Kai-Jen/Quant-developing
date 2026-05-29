@@ -680,3 +680,12 @@ class FutuBroker(BrokerBase):
             Total equity in USD.
         """
         return self.get_account().equity
+
+    def take_daily_snapshot(self) -> None:
+        """Daily snapshot — not yet implemented for FutuBroker."""
+        logger.warning("take_daily_snapshot() not implemented for FutuBroker")
+
+    def get_performance_history(self, days: int = 30) -> list:
+        """Performance history — not yet implemented for FutuBroker."""
+        logger.warning("get_performance_history() not implemented for FutuBroker")
+        return []

@@ -239,6 +239,11 @@ class TradeLogger:
     def get_performance_history(self, days: int = 30) -> list[dict[str, Any]]:
         """Read daily performance snapshots from the last *N* days.
 
+        .. deprecated::
+            This method is not called by the API server.
+            Performance history is served from SimulatedBroker's SQLite store.
+            Retained for potential future use or manual debugging.
+
         Parameters
         ----------
         days : int

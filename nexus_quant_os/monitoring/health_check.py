@@ -235,6 +235,7 @@ def check_price_anomaly(
         )
 
     df = prices_df.copy()
+    df = df.sort_values(["asset_id", "timestamp"])
     df["_ret"] = df.groupby("asset_id")["close"].pct_change()
 
     # Only check the most recent 5 rows per asset

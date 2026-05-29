@@ -8,7 +8,7 @@ llm/news_fetcher.py — 即時財經新聞 RSS 抓取引擎
 設計原則：
     1. 多來源冗餘 — Yahoo Finance + Google News + MarketWatch
     2. 優雅降級 — 單一來源失敗時自動切換至可用來源
-    3. 去重 + 時效性 — 只回傳最近 24 小時內的獨立標題
+    3. 去重 + 時效性 — 只回傳最近 48 小時內的獨立標題（可透過 max_age_hours 調整）
     4. 無需 API Key — 全部使用公開 RSS feeds
     5. 快取 — 每 30 分鐘更新一次，避免過度請求
 

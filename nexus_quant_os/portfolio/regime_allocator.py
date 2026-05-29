@@ -215,6 +215,8 @@ class RegimeAllocator:
             混合後的最終配置權重，shape [N_assets]。
         """
         cfg = self.config
+        # NOTE: hmm_bear_prob and hmm_danger_prob are logged but not yet
+        # used in blending logic. Reserved for future regime-aware blending.
         moe = np.asarray(moe_weights, dtype=np.float64).copy()
 
         # ── 重排 moe_weights 以匹配 self.assets 排序 ─────────────

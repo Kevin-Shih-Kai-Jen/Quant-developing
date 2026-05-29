@@ -291,7 +291,9 @@ class PortfolioOptimizer:
             return w_fallback
 
         if prob.status in ["optimal", "optimal_inaccurate"] and w.value is not None:
-            return np.array(w.value)
+            result = np.array(w.value).flatten()
+            result = np.clip(result, 0.0, None)  # Remove solver numerical noise
+            return result
         else:
             logger.warning("MVO (CVXPY) 未收斂狀態: %s，回退全現金", prob.status)
             w_fallback = np.zeros(N)
