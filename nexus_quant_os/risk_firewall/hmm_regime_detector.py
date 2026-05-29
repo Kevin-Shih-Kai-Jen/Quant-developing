@@ -141,6 +141,8 @@ class MarketRegimeDetector:
 
     def __init__(self, config: HMMConfig | None = None) -> None:
         self.config = config or HMMConfig()
+        if self.config.n_regimes not in (2, 3):
+            raise ValueError(f"n_regimes must be 2 or 3, got {self.config.n_regimes}")
         self._hmm: GaussianHMM | None = None
         self._is_fitted: bool = False
         # Maps HMM state index -> MarketRegime after post-hoc labelling
@@ -219,9 +221,7 @@ class MarketRegimeDetector:
             Highest vol -> EXTREME_SHOCK
             Middle  vol -> BEAR_HIGH_VOL
 
-        NOTE: We use feature index 1 (realised_vol), NOT index 0 (daily_return).
-        daily_return has both positive and negative means, so sorting by it
-        maps the highest-return state to EXTREME_SHOCK — semantically wrong.
+        NOTE: We use feature index 0 (realised_vol). Volatility is always the first column.
         """
         assert self._hmm is not None
         # Robustly pick the volatility feature (index 1 if available, else 0)

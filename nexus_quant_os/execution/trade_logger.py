@@ -29,7 +29,10 @@ Author : Nexus Quant OS — Execution Engineering Division
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows fallback — no file locking
 import json
 import logging
 from dataclasses import asdict
@@ -128,7 +131,8 @@ class TradeLogger:
         # Read existing entries (if any) and append — with file locking
         if filepath.exists():
             with open(filepath, 'r+', encoding='utf-8') as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_EX)
                 try:
                     try:
                         existing = json.load(f)
@@ -142,14 +146,17 @@ class TradeLogger:
                     f.truncate()
                     json.dump(existing, f, indent=2, default=_json_serialiser)
                 finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    if fcntl is not None:
+                        fcntl.flock(f, fcntl.LOCK_UN)
         else:
             with open(filepath, 'w', encoding='utf-8') as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_EX)
                 try:
                     json.dump([record], f, indent=2, default=_json_serialiser)
                 finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    if fcntl is not None:
+                        fcntl.flock(f, fcntl.LOCK_UN)
         logger.debug(
             "Logged trade: %s %s %.2f @ %.4f → %s",
             result.side, result.symbol, result.qty,
@@ -187,10 +194,14 @@ class TradeLogger:
             },
         }
 
-        filepath.write_text(
-            json.dumps(record, indent=2, default=_json_serialiser),
-            encoding="utf-8",
-        )
+        with open(filepath, 'w', encoding='utf-8') as f:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                json.dump(record, f, indent=2, default=_json_serialiser)
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
         logger.info(
             "Daily performance snapshot → %s  equity=%.2f  positions=%d",
             filepath.name, snapshot.equity, len(positions),

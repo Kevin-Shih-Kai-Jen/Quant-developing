@@ -223,8 +223,8 @@ class DeepSeekClient:
             score = float(score)
         except (TypeError, ValueError):
             return dict(_NEUTRAL_FALLBACK)
-        if math.isnan(score):
-            logger.warning("LLM 回傳 NaN 分數，使用中性值。")
+        if math.isnan(score) or math.isinf(score):
+            logger.warning("LLM 回傳 NaN/Inf 分數，使用中性值。")
             return dict(_NEUTRAL_FALLBACK)
 
         clamped = max(-1.0, min(1.0, score))

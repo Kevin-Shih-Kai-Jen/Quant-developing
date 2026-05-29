@@ -208,6 +208,9 @@ class WeightSmoother:
 
         # ── 第一天：直接使用模型輸出（無歷史可平滑）──────────────
         if self._prev_smooth is None:
+            total = raw.sum()
+            if total > 0:
+                raw = raw / total
             self._prev_smooth = raw.copy()
             self._step_count = 1
             self._hold_counter = np.ones(self.n_assets, dtype=np.int32)
@@ -255,7 +258,8 @@ class WeightSmoother:
 
         # ── 濾網 1：信號穩定度檢查 ────────────────────────────────
         # 只有連續 N 天同方向的信號才允許通過
-        signal_stable = self._check_signal_stability(delta, dynamic_window)
+        clipped_delta = ema_capped - self._prev_smooth
+        signal_stable = self._check_signal_stability(clipped_delta, dynamic_window)
 
         # ── 濾網 2：最小持倉天數鎖定 ──────────────────────────────
         # 如果持倉未滿 min_hold_days 且方向要反轉，則鎖定
@@ -272,6 +276,11 @@ class WeightSmoother:
         # ── 合併所有濾網：任一濾網觸發 → 維持原部位 ──────────────
         blocked = small_change | hold_locked | (~signal_stable)
         final = np.where(blocked, self._prev_smooth, ema_capped)
+
+        # 確保權重總和為 1.0
+        total = final.sum()
+        if total > 0:
+            final = final / total
 
         # ── 更新持倉計數器 ────────────────────────────────────────
         position_changed = ~np.isclose(final, self._prev_smooth, atol=1e-8)
@@ -292,11 +301,6 @@ class WeightSmoother:
                 self._step_count, n_blocked, self.n_assets,
                 n_stable, n_hold_locked,
             )
-
-        # 確保權重總和為 1.0
-        total = final.sum()
-        if total > 0:
-            final = final / total
 
         return final.copy()
 

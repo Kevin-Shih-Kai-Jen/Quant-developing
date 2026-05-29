@@ -152,11 +152,11 @@ def _validate_dataframe(
     if not ts.is_monotonic_increasing:
         diffs = ts.diff()
         violation_mask = diffs < pd.Timedelta(0)
-        first_bad = violation_mask.idxmax()
+        first_bad_pos = violation_mask.values.argmax()  # positional index
         raise TimestampSortError(
             f"[{name}] DataFrame is NOT sorted by '{timestamp_col}'.  "
-            f"First violation at index {first_bad}: "
-            f"{ts.iloc[first_bad - 1]} -> {ts.iloc[first_bad]}.  "
+            f"First violation at index {first_bad_pos}: "
+            f"{ts.iloc[first_bad_pos - 1]} -> {ts.iloc[first_bad_pos]}.  "
             f"Fix: call df.sort_values('{timestamp_col}') upstream."
         )
 
@@ -281,6 +281,13 @@ def enforce_pit_alignment(
     if asset_col is not None:
         join_keys.add(asset_col)
     feature_cols = [c for c in right.columns if c not in join_keys]
+
+    # M15: Column collision check
+    left_cols = set(left.columns) - join_keys
+    right_cols = set(right.columns) - join_keys
+    collisions = left_cols & right_cols
+    if collisions:
+        logger.warning("Column name collision detected: %s. Suffixes will be added.", collisions)
 
     # ── Step 4: Preserve right-side publication timestamp ─────────
     right_ts_col: str | None = None

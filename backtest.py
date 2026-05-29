@@ -33,7 +33,7 @@ from nexus_quant_os.data_pipelines.data_loader import load_all_data
 from nexus_quant_os.data_pipelines.aligner import enforce_pit_alignment
 from nexus_quant_os.training.train_moe import (
     ASSET_UNIVERSE, DATA_START, FRED_API_KEY, TRAIN_RATIO,
-    build_daily_dataset, build_raw_daily_returns,
+    build_daily_dataset,
     find_latest_checkpoint, load_checkpoint,
 )
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
@@ -61,6 +61,12 @@ def compute_metrics(returns: np.ndarray, label: str = "Strategy") -> dict:
     n = len(returns)
     if n == 0:
         return {}
+    if n < 5:
+        return {"label": label, "n_days": n, "total_return": 0.0,
+                "cagr": 0.0, "ann_vol": 0.0, "sharpe": 0.0,
+                "max_drawdown": 0.0, "calmar": 0.0, "win_rate": 0.0,
+                "best_day": 0.0, "worst_day": 0.0,
+                "equity": np.cumprod(1 + returns)}
 
     total_ret   = float(np.prod(1 + returns) - 1)
     cagr        = float((1 + total_ret) ** (TRADING_DAYS_PER_YEAR / n) - 1)
@@ -281,8 +287,7 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
 
     # ── 3. 構建數據集 ─────────────────────────────────────────────────
     print(">>> [3/5] 構建橫截面特徵 + 原始報酬...")
-    X, y_norm, _, dates, assets = build_daily_dataset(aligned_df)
-    y_raw, dates_raw, _      = build_raw_daily_returns(aligned_df)
+    X, y_norm, y_raw, dates, assets = build_daily_dataset(aligned_df)
 
     # 確保日期對齊
     split_idx = int(len(X) * TRAIN_RATIO)
@@ -334,6 +339,18 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
     bear_probs = np.zeros(min_len, dtype=np.float32)
     danger_probs = np.zeros(min_len, dtype=np.float32)
     
+    from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
+    spy_df_bt = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
+    spy_feat_matrix, _ = engineer_features(spy_df_bt)
+    # 使用回測的驗證期日期範圍來切片 SPY 特徵（避免索引不匹配）
+    # engineer_features 只從頭部丟棄 NaN 行，因此尾部與原始日期對齊
+    spy_remaining_dates = spy_df_bt['timestamp'].unique()[-len(spy_feat_matrix):]
+    date_mask = np.isin(spy_remaining_dates, dates_val)
+    spy_val_feat = spy_feat_matrix[date_mask]
+    assert len(spy_val_feat) == len(dates_val), (
+        f"SPY feature alignment failed: {len(spy_val_feat)} vs {len(dates_val)}"
+    )
+
     if firewall is not None:
         allocator = RegimeAllocator(
             assets=assets,
@@ -342,17 +359,6 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
                 max_prior_blend=0.25,
                 transition_smoothing=0.8,
             ),
-        )
-        from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
-        spy_df_bt = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
-        spy_feat_matrix, _ = engineer_features(spy_df_bt)
-        # 使用回測的驗證期日期範圍來切片 SPY 特徵（避免索引不匹配）
-        # engineer_features 只從頭部丟棄 NaN 行，因此尾部與原始日期對齊
-        spy_remaining_dates = spy_df_bt['timestamp'].unique()[-len(spy_feat_matrix):]
-        date_mask = np.isin(spy_remaining_dates, dates_val)
-        spy_val_feat = spy_feat_matrix[date_mask]
-        assert len(spy_val_feat) == len(dates_val), (
-            f"SPY feature alignment failed: {len(spy_val_feat)} vs {len(dates_val)}"
         )
 
         # 確保 SPY 特徵長度與回測期一致
@@ -392,7 +398,12 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
         ),
         asset_names=assets,
     )
-    expert_util = out.expert_utilisation.numpy()
+    top_k_idx = out.top_k_indices.numpy()  # [T, K]
+    E = router.config.num_experts
+    expert_util = np.zeros((len(top_k_idx), E))
+    for t in range(len(top_k_idx)):
+        for k in top_k_idx[t]:
+            expert_util[t, k] = 1.0 / router.config.top_k
     w_optimized = optimizer.optimize_series(
         moe_weight_series=w_scaled[:min_len],
         expert_utilisation_series=expert_util,
@@ -496,8 +507,10 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
         better = ""
         if name in ("Total Return", "CAGR", "Sharpe Ratio", "Calmar Ratio", "Win Rate", "Best Day"):
             better = " ✓" if sv > bv else ""
-        elif name in ("Ann. Volatility", "Max Drawdown"):
-            better = " ✓" if sv < bv else ""  # lower is better (less negative)
+        elif name == "Ann. Volatility":
+            better = " ✓" if sv < bv else ""  # lower is better
+        elif name == "Max Drawdown":
+            better = " ✓" if sv > bv else ""  # less negative is better
         elif name == "Worst Day":
             better = " ✓" if sv > bv else ""  # closer to 0 is better
         print(f"  {name:<28} {sv_str:>14}  {bv_str:>12}{better}")
@@ -517,7 +530,13 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
     )
 
     # ─── Expert 使用率 ────────────────────────────────────────────────
-    expert_util = out.expert_utilisation.numpy()
+    top_k_idx_report = out.top_k_indices.numpy()  # [T, K]
+    E_report = router.config.num_experts
+    expert_util = np.zeros(E_report)
+    for t in range(len(top_k_idx_report)):
+        for k in top_k_idx_report[t]:
+            expert_util[k] += 1.0 / router.config.top_k
+    expert_util /= len(top_k_idx_report)  # average over days
     print(f"\n  Expert Utilisation (avg over {len(X_val)} days):")
     for i, util in enumerate(expert_util):
         bar = "█" * int(util * 30)

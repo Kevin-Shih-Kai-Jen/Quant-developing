@@ -364,10 +364,11 @@ class OODAnomalyDetector:
         ae_zscore   = (ae_mse - self._train_mse_mean) / self._train_mse_std
         ae_score_01 = float(np.clip(ae_zscore / self.config.ae_mse_zscore_threshold, 0.0, 1.0))
 
-        # Fuse
-        combined = (
-            self.config.if_weight * if_score_01
-            + self.config.ae_weight * ae_score_01
+        # Either detector alone can trigger OOD
+        combined = max(
+            self.config.if_weight * if_score_01 + self.config.ae_weight * ae_score_01,
+            if_score_01 * 0.85,  # IF alone at 85% can trigger
+            ae_score_01 * 0.85,  # AE alone at 85% can trigger
         )
         is_ood = combined >= self.config.combined_threshold
 

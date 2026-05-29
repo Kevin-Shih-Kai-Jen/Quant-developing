@@ -21,6 +21,7 @@ Author : Nexus Quant OS — Data Engineering Division
 from __future__ import annotations
 
 import os
+import fcntl
 import logging
 from typing import Optional
 
@@ -195,8 +196,13 @@ def load_price_data(
     result = result.drop_duplicates(subset=["asset_id", "timestamp"], keep="last")
     result = result.sort_values(["asset_id", "timestamp"]).reset_index(drop=True)
     
-    # 存回快取
-    result.to_csv(cache_path, index=False)
+    # 存回快取 (with file lock)
+    with open(cache_path, 'w') as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            result.to_csv(f, index=False)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
     logger.info("價格數據快取已更新。")
     return result
 
@@ -281,20 +287,23 @@ def load_macro_data(
             logger.error("  ❌ %s 下載失敗: %s — 填入 NaN", series_id, exc)
             macro_daily[col_name] = np.nan
 
-    # 只要有「任何一個」特徵出現 NaN (例如部分 API 失敗、或是全數失敗)
+    # Check which columns completely failed (all NaN)
     macro_cols = [cfg["col"] for cfg in FRED_SERIES_CONFIG.values()]
     cache_path = os.path.join(DATA_DIR, "macro_cache.csv")
     
-    if macro_daily[macro_cols].isna().any().any():
+    failed_cols = [col for col in macro_cols if macro_daily[col].isna().all()]
+    if failed_cols:
         if os.path.exists(cache_path):
-            logger.warning("⚠️ FRED API 抓取異常 (部分或全數失敗)。啟動【真實歷史快取】降級模式...")
+            logger.warning("⚠️ FRED API 抓取異常 (部分失敗: %s)。從快取降級補回...", failed_cols)
             cached_macro = pd.read_csv(cache_path, parse_dates=["timestamp"])
-            # 將快取轉為以 timestamp 為 index，並 reindex 到當前 trading_days，然後 ffill
-            cached_macro = cached_macro.drop_duplicates("timestamp").set_index("timestamp")
-            macro_daily = cached_macro.reindex(trading_days, method="ffill")
-            macro_daily = macro_daily.bfill()  # backfill any leading NaNs
-            macro_daily.index.name = "timestamp"
+            # Only fill failed columns from cache
+            for col in failed_cols:
+                if col in cached_macro.columns:
+                    cached_series = cached_macro.set_index("timestamp")[col]
+                    macro_daily[col] = cached_series.reindex(macro_daily.index, method="ffill")
+            logger.warning("Used cache for failed FRED columns: %s", failed_cols)
             macro_daily = macro_daily.reset_index()
+            macro_daily["timestamp"] = pd.to_datetime(macro_daily["timestamp"])
         else:
             logger.warning("⚠️ FRED API 異常且找不到本地快取！啟動合成數據降級模式 (Synthetic Fallback)...")
             macro_daily["cpi_yoy"] = 3.0

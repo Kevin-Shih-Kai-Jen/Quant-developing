@@ -314,7 +314,7 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
 
     # Weight smoothing
     weight_smoother = WeightSmoother(
-        n_assets=N_ASSETS,
+        n_assets=len(assets_sorted),
         config=SmootherConfig(alpha=0.30, min_rebalance_threshold=0.04),
     )
     final_weights = weight_smoother.smooth(optimized_weights)

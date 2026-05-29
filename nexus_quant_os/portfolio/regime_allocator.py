@@ -131,7 +131,7 @@ class RegimeAllocator:
         config: RegimeAllocatorConfig | None = None,
         regime_priors: Dict[str, Dict[str, float]] | None = None,
     ) -> None:
-        self.assets = sorted(assets)  # 確保字母排序
+        self.assets = list(assets)  # 保留原始順序
         self.config = config or RegimeAllocatorConfig()
         self.priors = regime_priors or REGIME_PRIORS
         self._prev_regime: str | None = None
@@ -220,13 +220,18 @@ class RegimeAllocator:
         moe = np.asarray(moe_weights, dtype=np.float64).copy()
 
         # ── 重排 moe_weights 以匹配 self.assets 排序 ─────────────
-        if asset_order is not None and list(asset_order) != self.assets:
-            order_map = {name: idx for idx, name in enumerate(asset_order)}
-            reordered = np.zeros_like(moe)
-            for i, asset in enumerate(self.assets):
-                if asset in order_map:
-                    reordered[i] = moe[order_map[asset]]
-            moe = reordered
+        if asset_order is not None:
+            order_set = set(asset_order)
+            self_set = set(self.assets)
+            if order_set != self_set:
+                logger.warning("Asset set mismatch: order=%s vs self=%s", order_set - self_set, self_set - order_set)
+            if list(asset_order) != self.assets:
+                order_map = {name: idx for idx, name in enumerate(asset_order)}
+                reordered = np.zeros_like(moe)
+                for i, asset in enumerate(self.assets):
+                    if asset in order_map:
+                        reordered[i] = moe[order_map[asset]]
+                moe = reordered
 
         # ── 映射政體標籤 ───────────────────────────────────────────
         mapped_regime = self._map_regime_label(regime_label)
@@ -247,6 +252,7 @@ class RegimeAllocator:
             # 轉換期間：平滑地從舊政體過渡到新政體
             beta = cfg.transition_smoothing * self._prev_blend + \
                    (1.0 - cfg.transition_smoothing) * beta
+            beta = min(beta, cfg.max_prior_blend)
             logger.info(
                 "RegimeAllocator: Regime transition %s → %s  "
                 "(smoothed β=%.3f)",

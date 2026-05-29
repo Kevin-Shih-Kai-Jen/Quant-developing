@@ -540,6 +540,10 @@ class FutuBroker(BrokerBase):
         try:
             ctx = self._get_trade_ctx()
 
+            # Pre-fetch all prices in one batch
+            all_symbols = [intent.symbol for intent in intents]
+            prices_dict = self._get_prices(all_symbols)
+
             for intent in intents:
                 futu_code = self._to_futu_code(intent.symbol)
                 side = (
@@ -548,8 +552,7 @@ class FutuBroker(BrokerBase):
                 )
 
                 # Get current price for the limit order
-                prices = self._get_prices([intent.symbol])
-                price = prices.get(intent.symbol)
+                price = prices_dict.get(intent.symbol)
                 if price is None or price <= 0:
                     logger.warning(
                         "REJECTED %s %s — no price available",
@@ -598,7 +601,7 @@ class FutuBroker(BrokerBase):
                         symbol=intent.symbol,
                         side=intent.side,
                         qty=float(qty),
-                        filled_price=price,
+                        filled_price=0.0,
                         commission=0.0,  # Moomoo simulate has no commission
                         timestamp=datetime.now(timezone.utc),
                         order_id=order_id,

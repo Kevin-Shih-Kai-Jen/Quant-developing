@@ -228,6 +228,8 @@ class PortfolioOptimizer:
         mu = expected_returns.astype(np.float64)
         mu_scale = np.abs(mu).max() + 1e-8
         mu_norm = mu / mu_scale
+        cov_scale = np.abs(cov).max() + 1e-8
+        cov_norm = cov / cov_scale
 
         # 動態上限：Base + λ * max(0, Confidence - threshold)
         upper_bounds = np.zeros(N)
@@ -260,7 +262,7 @@ class PortfolioOptimizer:
         gamma = 2.0  # 風險趨避係數
         
         # 目標函數：最大化風險調整後報酬
-        objective = cp.Maximize(mu_norm.T @ w - gamma * cp.quad_form(w, cov))
+        objective = cp.Maximize(mu_norm.T @ w - gamma * cp.quad_form(w, cov_norm))
         
         constraints = [
             w >= 0,

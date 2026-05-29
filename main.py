@@ -267,7 +267,7 @@ def run_pipeline() -> None:
     # ─────────────────────────────────────────────────────────────
     # STEP 1: 真實數據載入
     # ─────────────────────────────────────────────────────────────
-    print(f"{ARROW} STEP 1/7 : 載入真實市場數據 (Yahoo Finance + FRED API)...")
+    print(f"{ARROW} STEP 1/9 : 載入真實市場數據 (Yahoo Finance + FRED API)...")
 
     daily_prices, macro_data, data_source = load_real_market_data()
 
@@ -283,7 +283,7 @@ def run_pipeline() -> None:
     # ─────────────────────────────────────────────────────────────
     # STEP 2: PiT 對齊 — 嚴格消除前瞻偏誤
     # ─────────────────────────────────────────────────────────────
-    print(f"{ARROW} STEP 2/7 : 執行 Point-in-Time 無前瞻偏誤對齊...")
+    print(f"{ARROW} STEP 2/9 : 執行 Point-in-Time 無前瞻偏誤對齊...")
 
     # 對每檔資產獨立進行對齊
     aligned_frames = []
@@ -321,7 +321,7 @@ def run_pipeline() -> None:
     # ─────────────────────────────────────────────────────────────
     # STEP 3: 特徵工程 — DataFrame → 數值特徵矩陣
     # ─────────────────────────────────────────────────────────────
-    print(f"{ARROW} STEP 3/7 : 特徵工程 (技術面 + 總經面融合)...")
+    print(f"{ARROW} STEP 3/9 : 特徵工程 (技術面 + 總經面融合)...")
 
     feature_matrix, feature_names = engineer_features(aligned_df)
     n_samples, n_features = feature_matrix.shape
@@ -350,7 +350,7 @@ def run_pipeline() -> None:
     # ─────────────────────────────────────────────────────────────
     # STEP 4: 防火牆訓練 (HMM 政體偵測 + OOD 孤立森林)
     # ─────────────────────────────────────────────────────────────
-    print(f"{ARROW} STEP 4/7 : 訓練智慧風險防火牆 (HMM + Isolation Forest + AE)...")
+    print(f"{ARROW} STEP 4/9 : 訓練智慧風險防火牆 (HMM + Isolation Forest + AE)...")
 
     firewall = IntelligentRiskFirewall.from_configs(
         hmm_config=HMMConfig(
@@ -385,7 +385,7 @@ def run_pipeline() -> None:
     # ─────────────────────────────────────────────────────────────
     # STEP 5: MoE Router — 大腦心臟推論
     # ─────────────────────────────────────────────────────────────
-    print(f"{ARROW} STEP 5/7 : MoE 動態路由器 (大腦心臟)...")
+    print(f"{ARROW} STEP 5/9 : MoE 動態路由器 (大腦心臟)...")
 
     device = torch.device("cpu")  # Docker on Mac M1 強制 CPU
     print(f"    推論裝置     : {device}")
@@ -454,7 +454,7 @@ def run_pipeline() -> None:
             noise_type=GatingNoiseType.NONE,
             aux_loss_coeff=1e-2,
         )
-        expert_names = ["xLSTM-Expert", "Mamba-Expert", "TabNet-Expert"]
+        expert_names = ["Tech-MLP", "Macro-TabNet", "Generalist-MLP", "Sentiment-MLP"]
         experts = nn.ModuleList([
             build_dummy_expert(
                 input_dim=MOE_INPUT_DIM,
@@ -474,8 +474,11 @@ def run_pipeline() -> None:
         print(f"{ARROW} STEP 5b  : DataFrame -> Tensor 轉換 + MoE 前向推論...")
 
         X_daily, _, _, dates_daily, assets_sorted = build_daily_dataset(aligned_df, inference_mode=True)
+        from sklearn.preprocessing import StandardScaler
+        fallback_scaler = StandardScaler()
+        X_daily_scaled = fallback_scaler.fit_transform(X_daily).astype(np.float32)
         live_tensor = torch.tensor(
-            X_daily, dtype=torch.float32, device=device
+            X_daily_scaled, dtype=torch.float32, device=device
         )
         print(f"    Tensor 形狀  : {list(live_tensor.shape)}")
         print(f"    dtype        : {live_tensor.dtype}")
@@ -508,9 +511,13 @@ def run_pipeline() -> None:
 
     # 建構共變異數矩陣（使用最近 60 天）
     if ckpt_path and len(X_daily) >= 60:
-        cov_matrix = np.cov(X_daily[-60:], rowvar=False)
-        # 截取至 N_ASSETS × N_ASSETS（用前 N 個主成份近似）
-        if cov_matrix.shape[0] > N_ASSETS:
+        # Extract daily_return feature (index 0 per asset block in the feature vector)
+        N_FEATURES_PER_ASSET = X_daily.shape[1] // N_ASSETS  # should be 9
+        return_indices = [i * N_FEATURES_PER_ASSET for i in range(N_ASSETS)]
+        returns_matrix = X_daily[-60:, return_indices]
+        cov_matrix = np.cov(returns_matrix, rowvar=False)
+        # Fallback to identity if cov_matrix shape is wrong
+        if cov_matrix.shape[0] != N_ASSETS:
             cov_matrix = np.eye(N_ASSETS) * 0.01
     else:
         cov_matrix = np.eye(N_ASSETS) * 0.01

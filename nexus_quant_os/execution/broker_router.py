@@ -27,6 +27,7 @@ Author : Nexus Quant OS — Execution Engineering Division
 from __future__ import annotations
 
 import logging
+import threading
 import math
 import random
 import sqlite3
@@ -280,6 +281,9 @@ class SimulatedBroker(BrokerBase):
 
         # Price cache (5-minute TTL)
         self._price_cache = _PriceCache(ttl_seconds=300)
+
+        # Execution lock (sync context)
+        self._exec_lock = threading.Lock()
 
         # Initialise database
         self._init_db()
@@ -536,6 +540,14 @@ class SimulatedBroker(BrokerBase):
         list[OrderResult]
             One result per intent.
         """
+        with self._exec_lock:
+            return self._execute_locked(intents)
+
+    def _execute_locked(
+        self,
+        intents: list[OrderIntent],
+    ) -> list[OrderResult]:
+        """Inner execute body, called under _exec_lock."""
         results: list[OrderResult] = []
         # Fix S1: use ET timezone for trade date, not system local time
         today_str = datetime.now(_ET).date().isoformat()

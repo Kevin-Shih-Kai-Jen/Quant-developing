@@ -239,23 +239,23 @@ class IntelligentRiskFirewall:
             return 1.0
 
         # Sigmoid-smooth blending
-        composite = max(hmm_danger, hmm_bear, ood_score)
-
         if tier == RiskTier.WARNING:
-            # Determine which threshold ranges to use based on which signal is dominant
-            if ood_score >= hmm_danger and ood_score >= hmm_bear:
+            if ood_score >= cfg.ood_warning_threshold:
+                composite = ood_score
                 lo, hi = cfg.ood_warning_threshold, cfg.ood_emergency_threshold
             else:
+                composite = hmm_bear
                 lo, hi = cfg.hmm_warning_threshold, cfg.hmm_emergency_threshold
             t      = np.clip((composite - lo) / (hi - lo + 1e-8), 0.0, 1.0)
             t_s    = float(1.0 / (1.0 + np.exp(-10.0 * (t - 0.5))))
             return float(cfg.caution_scale + t_s * (cfg.warning_scale - cfg.caution_scale))
 
         if tier == RiskTier.CAUTION:
-            # Determine which threshold ranges to use based on which signal is dominant
-            if ood_score >= hmm_danger and ood_score >= hmm_bear:
+            if ood_score >= cfg.ood_caution_threshold:
+                composite = ood_score
                 lo, hi = cfg.ood_caution_threshold, cfg.ood_warning_threshold
             else:
+                composite = hmm_bear
                 lo, hi = cfg.hmm_caution_threshold, cfg.hmm_warning_threshold
             t      = np.clip((composite - lo) / (hi - lo + 1e-8), 0.0, 1.0)
             t_s    = float(1.0 / (1.0 + np.exp(-10.0 * (t - 0.5))))
@@ -356,7 +356,7 @@ class IntelligentRiskFirewall:
 
         # 1. Run detectors
         hmm_pred   = self.hmm_detector.predict(market_features)
-        ood_result = self.ood_detector.detect(market_features)
+        ood_result = self.ood_detector.detect(market_features[-1:])
 
         # 2. Resolve risk tier
         tier, reason = self._resolve_tier(hmm_pred, ood_result)

@@ -74,21 +74,26 @@ _broker: SimulatedBroker | None = None
 _trade_logger: TradeLogger | None = None
 
 _pipeline_lock = asyncio.Lock()
+_init_lock = asyncio.Lock()
 
 
-def _get_broker() -> SimulatedBroker:
+async def _get_broker() -> SimulatedBroker:
     """Lazy-init SimulatedBroker singleton."""
     global _broker
     if _broker is None:
-        _broker = SimulatedBroker(initial_capital=100_000.0)
+        async with _init_lock:
+            if _broker is None:  # double-check
+                _broker = SimulatedBroker(initial_capital=100_000.0)
     return _broker
 
 
-def _get_trade_logger() -> TradeLogger:
+async def _get_trade_logger() -> TradeLogger:
     """Lazy-init TradeLogger singleton."""
     global _trade_logger
     if _trade_logger is None:
-        _trade_logger = TradeLogger()
+        async with _init_lock:
+            if _trade_logger is None:  # double-check
+                _trade_logger = TradeLogger()
     return _trade_logger
 
 
@@ -116,12 +121,14 @@ class ChatResponse(BaseModel):
 _gemini_advisor = None
 
 
-def _get_advisor():
+async def _get_advisor():
     """Lazy-init GeminiAdvisor singleton."""
     global _gemini_advisor
     if _gemini_advisor is None:
-        from nexus_quant_os.advisor.advisor_v2 import GeminiAdvisor
-        _gemini_advisor = GeminiAdvisor()
+        async with _init_lock:
+            if _gemini_advisor is None:  # double-check
+                from nexus_quant_os.advisor.advisor_v2 import GeminiAdvisor
+                _gemini_advisor = GeminiAdvisor()
     return _gemini_advisor
 
 
@@ -129,7 +136,7 @@ def _get_advisor():
 async def advisor_chat(req: ChatRequest):
     """Conversational AI Financial Advisor (Gemini 2.5 Flash)."""
     try:
-        advisor = _get_advisor()
+        advisor = await _get_advisor()
         response_text = advisor.chat(req.message)
         return ChatResponse(response=response_text, conversation_id="gemini-session")
     except Exception as e:
@@ -145,7 +152,7 @@ async def advisor_upload(
     """Upload a broker screenshot for AI analysis."""
     tmp_path = None
     try:
-        advisor = _get_advisor()
+        advisor = await _get_advisor()
         suffix = Path(file.filename or "img.png").suffix
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             contents = await file.read()
@@ -166,7 +173,7 @@ async def advisor_upload(
 async def advisor_profile():
     """Get stored user profile."""
     try:
-        advisor = _get_advisor()
+        advisor = await _get_advisor()
         return {"profile": advisor.handle_profile()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -530,9 +537,10 @@ async def execute_trades(pipeline_result: PipelineResponse):
     4. TradeLogger 記錄交易日誌
     5. 回傳交易結果
     """
-    try:
-        broker = _get_broker()
-        trade_logger = _get_trade_logger()
+    async with _pipeline_lock:
+      try:
+        broker = await _get_broker()
+        trade_logger = await _get_trade_logger()
 
         # 檢查市場是否開盤（模擬模式允許非開盤時段執行，但會記錄）
         market_open = broker.is_market_open()
@@ -542,8 +550,14 @@ async def execute_trades(pipeline_result: PipelineResponse):
         target_weights = {}
         for alloc in pipeline_result.allocations:
             weight = alloc.get("safe_weight", 0.0)
-            if weight > 0.001:  # 忽略極小權重
+            if weight >= 0.0:  # include zero weights so broker can sell
                 target_weights[alloc["asset"]] = weight
+
+        # Include 0.0 target for positions currently held but not in pipeline output
+        current_positions = broker.get_positions()
+        for pos in current_positions:
+            if pos.symbol not in target_weights and pos.symbol != 'USD':
+                target_weights[pos.symbol] = 0.0  # signal to sell
 
         if not target_weights:
             return {
@@ -591,7 +605,7 @@ async def execute_trades(pipeline_result: PipelineResponse):
             "portfolio_value": broker.get_portfolio_value(),
         }
 
-    except Exception as e:
+      except Exception as e:
         logger.exception("Trade execution failed")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -600,7 +614,7 @@ async def execute_trades(pipeline_result: PipelineResponse):
 async def get_portfolio():
     """回傳當前模擬交易組合的即時持倉。"""
     try:
-        broker = _get_broker()
+        broker = await _get_broker()
         account = broker.get_account()
         positions = broker.get_positions()
 
@@ -632,7 +646,7 @@ async def get_portfolio():
 async def get_performance():
     """回傳歷史績效曲線（每日淨值快照）。"""
     try:
-        broker = _get_broker()
+        broker = await _get_broker()
         history = broker.get_performance_history()
 
         if not history:

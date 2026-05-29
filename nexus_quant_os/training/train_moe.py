@@ -290,10 +290,14 @@ class CombinedPortfolioLoss(nn.Module):
         # ── Sharpe ratio loss ─────────────────────────────────────
         # 投資組合日報酬 = Σ w[t,a] × r[t,a] (使用真實報酬計算 Sharpe)
         portfolio_ret = (y_pred * y_raw).sum(dim=1)  # [B]
-        mean_ret  = portfolio_ret.mean()
-        std_ret   = portfolio_ret.std() + self.eps
-        sharpe    = mean_ret / std_ret
-        sharpe_loss = -sharpe  # 最小化負 Sharpe = 最大化 Sharpe
+        if portfolio_ret.shape[0] < 2:
+            sharpe_loss = torch.tensor(0.0, device=y_pred.device)
+            sharpe = 0.0
+        else:
+            mean_ret  = portfolio_ret.mean()
+            std_ret   = portfolio_ret.std() + self.eps
+            sharpe    = mean_ret / std_ret
+            sharpe_loss = -sharpe  # 最小化負 Sharpe = 最大化 Sharpe
 
         # ── Turnover penalty ─────────────────────────────────────
         # 計算相鄰時間步之間的權重變動（懲罰頻繁換倉）
@@ -360,7 +364,7 @@ def _add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = 0.0
 
     # 前瞻報酬（訓練目標）：t+1 的報酬，在 t 時預測
-    df["forward_return"] = df.groupby("asset_id")["close"].pct_change().groupby(df["asset_id"]).shift(-1)
+    df["forward_return"] = df.groupby("asset_id")["daily_return"].shift(-1)
 
     return df
 
@@ -935,7 +939,8 @@ if __name__ == "__main__":
     # 取出 SPY 並過濾日期，使其只對訓練期的數據擬合
     spy_df = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
     spy_feat_matrix, _feat_names = engineer_features(spy_df)
-    train_spy_matrix = spy_feat_matrix[:split_idx]
+    spy_split_idx = int(len(spy_feat_matrix) * TRAIN_RATIO)
+    train_spy_matrix = spy_feat_matrix[:spy_split_idx]
 
     firewall = IntelligentRiskFirewall.from_configs(
         hmm_config=HMMConfig(n_regimes=3, n_iter=200, danger_threshold=0.50),
