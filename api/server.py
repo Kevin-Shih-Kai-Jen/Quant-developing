@@ -672,3 +672,81 @@ async def get_performance():
     except Exception as e:
         logger.exception("Performance fetch failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── Alpha Hunter 端點 ─────────────────────────────────────
+
+# 全域單例（lazy-init，與其他模組一致）
+_alpha_generator = None
+
+async def _get_alpha_generator():
+    global _alpha_generator
+    if _alpha_generator is None:
+        async with _init_lock:
+            if _alpha_generator is None:
+                from nexus_quant_os.alpha_hunter.signal_generator import AlphaSignalGenerator
+                _alpha_generator = AlphaSignalGenerator(
+                    gemini_api_key=os.environ.get("GEMINI_API_KEY"),
+                )
+    return _alpha_generator
+
+@app.get("/api/alpha/signals")
+async def get_alpha_signals():
+    """回傳最新的 Alpha 信號列表。"""
+    try:
+        generator = await _get_alpha_generator()
+        from nexus_quant_os.alpha_hunter.models import SignalStrength
+        
+        signals = generator.generate_signals(
+            include_supply_chain=False,  # 預設關閉（太慢）
+            include_ai_analysis=True,
+        )
+        return {
+            "status": "success",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "signals": [s.to_dict() for s in signals if s.signal_strength != SignalStrength.AVOID],
+            "total": len(signals),
+            "strong_buy_count": sum(1 for s in signals if s.signal_strength == SignalStrength.STRONG_BUY),
+            "buy_count": sum(1 for s in signals if s.signal_strength == SignalStrength.BUY),
+        }
+    except Exception as e:
+        logger.exception("Alpha signal generation failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alpha/scan/{ticker}")
+async def scan_single_ticker(ticker: str):
+    """掃描單一公司的完整 Alpha 分析。"""
+    try:
+        generator = await _get_alpha_generator()
+        signal = generator.generate_single(ticker.upper())
+        return {
+            "status": "success",
+            "signal": signal.to_dict(),
+        }
+    except Exception as e:
+        logger.exception("Alpha scan failed for %s", ticker)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alpha/supply-chain/{ticker}")
+async def get_supply_chain(ticker: str):
+    """取得一家公司的供應鏈圖譜。"""
+    try:
+        generator = await _get_alpha_generator()
+        graph = generator._tracker.build_graph(ticker.upper())
+        return {
+            "status": "success",
+            "center": graph.center_ticker,
+            "edges": [
+                {
+                    "source": e.source_ticker,
+                    "target": e.target_ticker,
+                    "relation": e.relation.value,
+                    "revenue_pct": e.revenue_pct,
+                    "confidence": e.confidence,
+                }
+                for e in graph.edges
+            ],
+            "total_connections": len(graph.edges),
+        }
+    except Exception as e:
+        logger.exception("Supply chain build failed for %s", ticker)
+        raise HTTPException(status_code=500, detail=str(e))
