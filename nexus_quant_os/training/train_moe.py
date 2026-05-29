@@ -410,6 +410,9 @@ def build_daily_dataset(
         set(df.loc[df["asset_id"] == a, "timestamp"].dt.normalize())
         for a in assets
     ]
+    if not dates_sets:
+        raise ValueError("PiT 對齊後無任何有效資料！(可能是 FRED 總經數據全為 NaN 導致整列被 dropna 剔除)")
+    
     common_dates = sorted(set.intersection(*dates_sets))
     logger.info("Common dates: %d", len(common_dates))
 

@@ -170,11 +170,53 @@ class NewsFetcher:
         self._cache = all_headlines
         self._cache_time = now
 
-        result = all_headlines[:max_headlines]
+        result = self._diversity_sample(all_headlines, max_headlines)
         logger.info(
-            "新聞抓取完成 | 共 %d 條獨立標題（取前 %d 條）",
+            "新聞抓取完成 | 共 %d 條獨立標題（多樣性抽樣取 %d 條）",
             len(all_headlines), len(result),
         )
+        return result
+
+    def _diversity_sample(self, headlines: list[str], max_headlines: int) -> list[str]:
+        """多樣性抽樣：基於關鍵字分群，平均抽取不同領域的新聞以降低同質性。"""
+        if len(headlines) <= max_headlines:
+            return headlines
+            
+        category_patterns = {
+            "MACRO": re.compile(r'\b(fed|rate|rates|inflation|cpi|pce|payroll|unemployment|economy|central bank|powell|gdp|recession)\b', re.IGNORECASE),
+            "TECH": re.compile(r'\b(ai|apple|nvidia|microsoft|google|meta|amazon|semiconductor|chip|chips|tsmc|amd|intel|tech|cyber)\b', re.IGNORECASE),
+            "MARKETS": re.compile(r'\b(stock|stocks|rally|plunge|drop|soar|s&p|nasdaq|dow|bull|bear|wall street|futures|market|markets|earnings)\b', re.IGNORECASE),
+            "BONDS_COMMODITIES": re.compile(r'\b(bond|bonds|yield|yields|treasury|gold|oil|crude|energy|crypto|bitcoin|btc|ethereum)\b', re.IGNORECASE),
+        }
+        
+        buckets = {cat: [] for cat in category_patterns.keys()}
+        buckets["OTHERS"] = []
+        
+        for h in headlines:
+            assigned = False
+            for cat, pattern in category_patterns.items():
+                if pattern.search(h):
+                    buckets[cat].append(h)
+                    assigned = True
+                    break
+            if not assigned:
+                buckets["OTHERS"].append(h)
+                
+        # 平均從各個 Bucket 抽樣
+        result = []
+        bucket_keys = list(buckets.keys())
+        
+        while len(result) < max_headlines:
+            added_this_round = False
+            for key in bucket_keys:
+                if buckets[key] and len(result) < max_headlines:
+                    result.append(buckets[key].pop(0))
+                    added_this_round = True
+            
+            # 如果所有 bucket 都抽光了，強制結束（防呆）
+            if not added_this_round:
+                break
+                
         return result
 
     def _fetch_from_source(self, source: RSSSource) -> list[str]:

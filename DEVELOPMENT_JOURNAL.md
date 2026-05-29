@@ -1,6 +1,6 @@
 # Nexus Quant OS — 開發歷程 (Development Journal)
 
-> **最後更新**: 2026-05-26
+> **最後更新**: 2026-05-29
 > **作者**: Kevin Shih
 > **專案**: Nexus Quant OS — 新世代量化交易引擎
 
@@ -18,6 +18,13 @@ v0.x (早期原型)        v1.0 (核心架構)        v2.0 (風控升級)       
      ├─ Basic Strategy      ├─ Feature Engineer    ├─ Regime Allocator    ├─ Dynamic Allocation    ├─ Fail-Fast TCP Check
      └─ Mixed Strategy      ├─ Docker Pipeline     ├─ Weight Smoother     ├─ Data Integrity Audit  └─ OS Architecture
                             └─ Backtest Engine     └─ Expert Specializ.   └─ Alpha Attribution
+
+v3.1 (數據穩定化)      v3.2 (LLM 雙軌)
+     │                      │
+     ├─ CSV 增量快取         ├─ Ollama Gemma4:e4b 本地備援
+     ├─ FRED 合成降級        ├─ 多樣性新聞抽樣 (Diversity Sampling)
+     ├─ 快取新鮮度驗證       ├─ 智能撤單防呆
+     └─ 部分失敗處理        └─ 負現金 UI 提示
 ```
 
 ---
@@ -232,14 +239,6 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 
 ---
 
-## 技術債與已知限制
-
-| 項目 | 說明 | 狀態 |
-|:--|:--|:--|
-| 資產選擇偏誤 | NVDA/AVGO 為事後選入的飆股 | ⚠️ 已記錄 |
-| 單一訓練視窗 | 無 Walk-Forward 自動重訓練 | 📋 未來功能 |
-| 無實時交易 | 僅回測，無 Paper/Live Trading 串接 | ✅ 已解決 (v3.1 Moomoo) |
-| CPU-only 訓練 | Docker on Mac M1 限制 | ℹ️ 已知 |
 
 ---
 
@@ -268,15 +267,108 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 
 ---
 
+## Phase 5.1: 數據管線穩定化 — 從脆弱到反脆弱 (v3.1)
+
+### 🐛 問題發現
+
+> 「Pipeline 每次執行都崩在 FRED API 超時。一旦美聯儲的 API 斷線，整個系統就癱瘓了。」
+
+更嚴重的是，快取機制有設計缺陷：當新增資產或擴大日期範圍時，舊快取被當作「完整的」重新載入，導致 `EmptyDataFrameError`。
+
+### 🏗️ 架構決策
+
+#### 三層降級防禦 (Graceful Degradation)
+```
+FRED API 成功?
+  ├─ YES → 使用真實數據，寫入快取
+  └─ NO
+      ├─ 本地快取存在且完整?
+      │   ├─ YES → 使用快取 + forward-fill
+      │   └─ NO
+      │       └─ 啟動合成降級 (Synthetic Fallback)
+      │           CPI=3.0, 失業率=4.0, PMI=50.0...
+      └─ (無論走哪條路都不會崩潰)
+```
+
+#### 快取新鮮度驗證
+- 檢測快取中的 ticker 集合是否與請求一致（新增資產時作廢舊快取）
+- 只增量下載新數據，與快取合併後重新存檔
+
+### 里程碑
+- **CSV 增量快取**: 價格數據與總經數據各自獨立快取
+- **FRED 部分失敗處理**: `any().any()` 邏輯，任一指標缺失即觸發降級
+- **合成降級模式**: 填入合理常數，確保 Pipeline 不中斷
+
+---
+
+## Phase 5.2: LLM 雙軌備援 + 多樣性新聞抽樣 (v3.2)
+
+### 🐛 問題發現
+
+> 「Gemini API 配額超限 (429) 時，備援的 Gemma 模型也跟著報 404。」
+
+根因：備援客戶端 (`gemma_client.py`) 原本寫死連線到 Google Cloud 端點，根本沒有連到本地的 Ollama。更糟的是，程式碼裡有一段「自作聰明」的防呆邏輯，會強制將使用者指定的模型名稱 (`gemma4:e4b`) 改寫成 `gemma2:2b`，導致 Ollama 找不到模型。
+
+### 🏗️ 架構決策
+
+#### LLM 雙軌制 (Dual-Track LLM)
+```
+新聞標題 → SentimentAggregator
+              ├─ Gemini Flash (雲端, 主力)
+              │   └─ 成功 → 權重 50%
+              │   └─ 失敗 (429 配額超限) → 回傳中性分數 0.0
+              │
+              └─ Ollama Gemma4:e4b (本地, 備援)
+                  └─ 成功 → 權重 50%
+                  └─ 失敗 (Ollama 未啟動) → 回傳中性分數 0.0
+
+最終情緒分數 = 加權平均 (去除失敗來源)
+```
+
+#### 多樣性新聞抽樣 (Diversity Sampling)
+原本系統從 RSS 抓到 186 條新聞後，直接取前 15 條。這會導致高度同質性（例如 15 條全部在講 NVIDIA）。
+
+新機制：
+```
+186 條新聞 → 關鍵字分桶
+  ├─ MACRO:   fed, inflation, cpi, gdp, recession...
+  ├─ TECH:    ai, nvidia, apple, chip, tsmc...
+  ├─ MARKETS: stock, rally, plunge, s&p, nasdaq...
+  ├─ BONDS:   bond, yield, gold, oil, crypto...
+  └─ OTHERS:  其他未歸類
+
+→ Round-Robin 輪流從每桶各取 1 條 → 15 條多樣化精華
+```
+
+### 里程碑
+- **Ollama 本地推論**: `gemma_client.py` 完全改寫，直接向 `localhost:11434` 發送請求
+- **模型名稱零篡改**: 移除所有自動改名邏輯，嚴格使用使用者指定的 `gemma4:e4b`
+- **Diversity Sampling**: 關鍵字分桶 + Round-Robin 均衡抽樣
+- **智能撤單防呆**: `cancel_all_pending()` 取代反向沖銷，節省手續費
+- **負現金 UI 提示**: T+2 交割期間的暫時性負餘額顯示解釋訊息
+
+---
+
+## 技術債與已知限制
+
+| 項目 | 說明 | 狀態 |
+|:--|:--|:--|
+| 資產選擇偏誤 | NVDA/AVGO 為事後選入的飆股 | ⚠️ 已記錄 |
+| 單一訓練視窗 | 無 Walk-Forward 自動重訓練 | 📋 未來功能 |
+| FRED API 依賴 | 無 API Key 時僅能用合成假資料 | ⚠️ 合成降級已實作 |
+| OOD 假資料偵測 | 合成降級模式會觸發 OOD EMERGENCY (預期行為) | ℹ️ 已知 |
+| CPU-only 訓練 | Docker on Mac M1 限制 | ℹ️ 已知 |
+
+---
+
 ## 未來路線圖
 
 詳見 [ROADMAP.md](ROADMAP.md)
 
 | 階段 | 功能 | 預估時程 |
 |:--|:--|:--|
-| Phase 5 | Moomoo Paper Trading API 串接 | 1-2 週 |
-| Phase 6 | AI 個人理財顧問 Agent | 2-3 週 |
-| Phase 7 | Alpha 獵手 Agent (供應鏈追蹤) | 4-8 週 |
+| Phase 6 | AI 個人理財顧問 Agent (多模態) | 2-3 週 |
+| Phase 7 | Alpha 獵手 Agent (供應鏈追蹤, 新專案) | 4-8 週 |
 | 持續 | 自動化 Bug 偵測 + 持續創新 | 永續 |
 
 ---
@@ -287,7 +379,7 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 |:--|:--|
 | [README.md](README.md) | 專案總覽與快速入門 |
 | [DEVELOPMENT_JOURNAL.md](DEVELOPMENT_JOURNAL.md) | 本文件 — 完整開發歷程 |
-| [ROADMAP.md](ROADMAP.md) | 未來功能路線圖 |
+| [ROADMAP.md](ROADMAP.md) | 功能路線圖與版本演化追蹤 |
 | [docs/TECHNICAL_ARCHITECTURE_RESEARCH.md](docs/TECHNICAL_ARCHITECTURE_RESEARCH.md) | Deep Think 深度技術架構研究 |
 | [docs/INFRASTRUCTURE_SPEC.md](docs/INFRASTRUCTURE_SPEC.md) | Deep Research 量化金融基礎設施規格 |
 | [audit_report_data_integrity.md](audit_report_data_integrity.md) | 數據完整性審計報告 |
@@ -296,3 +388,4 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 ---
 
 *「好的量化系統不是一天建成的。每一次失敗都是一次架構升級的機會。」*
+

@@ -67,7 +67,7 @@ class GemmaClient:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gemma-4-27b-it",
+        model: str = "gemma4:e4b",
         timeout: float = 45.0,
         max_retries: int = 3,
     ) -> None:
@@ -116,63 +116,50 @@ class GemmaClient:
         self._last_request_time = time.monotonic()
 
     def _call_gemma_with_retry(self, prompt: str) -> str | None:
-        """對 Gemma generateContent 端點發送請求，含指數退避重試。"""
-        url = f"{_GEMMA_API_BASE}/{self.model}:generateContent"
-        params = {"key": self.api_key}
+        """對本地 Ollama 端點發送請求，含指數退避重試。"""
+        url = "http://localhost:11434/api/generate"
+        
         payload: dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 256,
-            },
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json"
         }
 
         for attempt in range(1, self.max_retries + 1):
             try:
                 self._enforce_rate_limit()
                 resp = requests.post(
-                    url, params=params, json=payload, timeout=self.timeout,
+                    url, json=payload, timeout=self.timeout,
                 )
 
                 if resp.status_code == 429:
-                    logger.warning("Gemma API 配額超限 (attempt %d)。", attempt)
+                    logger.warning("Ollama API 配額超限或繁忙 (attempt %d)。", attempt)
                     if attempt < self.max_retries:
                         time.sleep(2 ** attempt)
                     continue
 
                 resp.raise_for_status()
                 data = resp.json()
-                text = self._extract_text(data)
+                text = data.get("response", "")
                 if not text:
                     continue
                 return text
 
             except requests.exceptions.Timeout:
-                logger.warning("Gemma 請求逾時 (attempt %d)。", attempt)
+                logger.warning("Ollama 請求逾時 (attempt %d)。", attempt)
             except requests.exceptions.ConnectionError:
-                logger.warning("Gemma 連線失敗 (attempt %d)。", attempt)
+                logger.warning("Ollama 連線失敗 (attempt %d)。請確認 Ollama 已經在 localhost:11434 啟動！", attempt)
             except requests.exceptions.HTTPError as e:
-                logger.warning("Gemma HTTP 錯誤 (attempt %d): %s", attempt, e)
+                logger.warning("Ollama HTTP 錯誤 (attempt %d): %s", attempt, e)
             except (ValueError, KeyError) as e:
-                logger.warning("Gemma 解析失敗 (attempt %d): %s", attempt, e)
+                logger.warning("Ollama 解析失敗 (attempt %d): %s", attempt, e)
 
             if attempt < self.max_retries:
                 time.sleep(2 ** attempt)
 
-        logger.error("Gemma 全部重試失敗，回傳中性分數。")
+        logger.error("Gemma (Ollama) 全部重試失敗，回傳中性分數。")
         return None
-
-    @staticmethod
-    def _extract_text(data: dict[str, Any]) -> str | None:
-        """從 Gemma 回應結構提取生成文字。"""
-        try:
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return None
-            parts = candidates[0].get("content", {}).get("parts", [])
-            return parts[0].get("text", "") if parts else None
-        except (IndexError, AttributeError):
-            return None
 
     def _parse_response(self, raw_text: str) -> dict[str, Any]:
         """從模型回應中提取 JSON 並驗證格式。"""

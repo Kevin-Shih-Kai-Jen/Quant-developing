@@ -873,6 +873,9 @@
                         <div class="stat-label"><span class="stat-emoji">💵</span> 現金</div>
                         <div class="stat-value" id="statCash">—</div>
                         <div class="stat-sub" id="statBuyingPower"></div>
+                        <div id="cashMarginHint" style="display:none; color: var(--yellow); font-size: 0.75rem; margin-top: 4px;">
+                            💡 負值為 T+2 交割期內的暫時未結算資金，屬正常現象
+                        </div>
                     </div>
                     <div class="glass-card stat-card animate-in animate-in-delay-3">
                         <div class="stat-label"><span class="stat-emoji">🛡️</span> 風險等級</div>
@@ -1130,6 +1133,15 @@
 
         const cashEl = document.getElementById('statCash');
         animateValue(cashEl, 0, acct.cash || 0, 1200, formatCurrency);
+
+        const cashHintEl = document.getElementById('cashMarginHint');
+        if (acct.cash < 0) {
+            cashHintEl.style.display = 'block';
+            cashEl.style.color = 'var(--yellow)';
+        } else {
+            cashHintEl.style.display = 'none';
+            cashEl.style.color = '';
+        }
 
         document.getElementById('statBuyingPower').textContent = `購買力: ${formatCurrency(acct.buying_power)}`;
 

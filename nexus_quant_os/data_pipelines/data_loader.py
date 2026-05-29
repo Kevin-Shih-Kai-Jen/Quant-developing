@@ -20,6 +20,7 @@ Author : Nexus Quant OS — Data Engineering Division
 
 from __future__ import annotations
 
+import os
 import logging
 from typing import Optional
 
@@ -27,6 +28,11 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("nexus_quant_os.data_pipelines.data_loader")
+
+# 確保 data 目錄存在
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -97,8 +103,41 @@ def load_price_data(
             "yfinance 未安裝。請在 requirements.txt 加入 yfinance>=0.2.38"
         )
 
+    cache_path = os.path.join(DATA_DIR, "price_cache.csv")
+    cached_df = None
+    fetch_start = start
+
+    # 嘗試讀取快取並決定增量抓取的起點
+    if os.path.exists(cache_path):
+        try:
+            cached_df = pd.read_csv(cache_path, parse_dates=["timestamp"])
+            cached_tickers = set(cached_df["asset_id"].unique())
+            
+            # 檢查是否所有要求的標的都在快取中
+            if not set(tickers).issubset(cached_tickers):
+                logger.warning("發現新標的加入，捨棄快取，重新完整下載所有資料。")
+                cached_df = None
+            # 檢查要求的起始日期是否比快取還早
+            elif pd.Timestamp(fetch_start) < cached_df["timestamp"].min():
+                logger.warning("要求的起始日期早於快取紀錄，捨棄快取，重新完整下載。")
+                cached_df = None
+            else:
+                last_date = cached_df["timestamp"].max()
+                if pd.Timestamp(fetch_start) <= last_date:
+                    # 只需要抓取快取最後一天的隔天到 end
+                    fetch_start = (last_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                    logger.info("找到價格快取，最後更新日: %s，增量下載起點: %s", last_date.strftime("%Y-%m-%d"), fetch_start)
+        except Exception as e:
+            logger.warning("無法讀取價格快取，將重新下載: %s", e)
+            cached_df = None
+
+    # 如果增量起點已經超過或等於結束日，直接回傳快取
+    if cached_df is not None and pd.Timestamp(fetch_start) >= pd.Timestamp(end):
+        # 過濾出本次需要的 tickers
+        return cached_df[cached_df["asset_id"].isin(tickers)].reset_index(drop=True)
+
     logger.info(
-        "下載價格數據 | tickers=%s | %s -> %s", tickers, start, end
+        "下載價格數據 | tickers=%s | %s -> %s", tickers, fetch_start, end
     )
 
     rows: list[pd.DataFrame] = []
@@ -106,13 +145,13 @@ def load_price_data(
         try:
             raw = yf.download(
                 ticker,
-                start=start,
+                start=fetch_start,
                 end=end,
                 auto_adjust=True,
                 progress=False,
             )
             if raw.empty:
-                logger.warning("  %s: 無數據回傳，跳過", ticker)
+                logger.warning("  %s: %s -> %s 無數據回傳，跳過", ticker, fetch_start, end)
                 continue
 
             # yfinance 新版可能回傳 MultiIndex 欄位，統一壓平
@@ -137,11 +176,27 @@ def load_price_data(
         except Exception as exc:
             logger.error("  ❌ %s 下載失敗: %s", ticker, exc)
 
-    if not rows:
-        raise RuntimeError("所有標的均下載失敗，請檢查網路連線。")
+    new_data = None
+    if rows:
+        new_data = pd.concat(rows, ignore_index=True)
+    
+    # 合併快取與新資料
+    if cached_df is not None and new_data is not None:
+        result = pd.concat([cached_df, new_data], ignore_index=True)
+    elif cached_df is not None:
+        result = cached_df
+    elif new_data is not None:
+        result = new_data
+    else:
+        raise RuntimeError("所有標的均下載失敗，且無快取可用。請檢查網路連線。")
 
-    result = pd.concat(rows, ignore_index=True)
+    # 排序與去重
+    result = result.drop_duplicates(subset=["asset_id", "timestamp"], keep="last")
     result = result.sort_values(["asset_id", "timestamp"]).reset_index(drop=True)
+    
+    # 存回快取
+    result.to_csv(cache_path, index=False)
+    logger.info("價格數據快取已更新。")
     return result
 
 
@@ -225,9 +280,37 @@ def load_macro_data(
             logger.error("  ❌ %s 下載失敗: %s — 填入 NaN", series_id, exc)
             macro_daily[col_name] = np.nan
 
-    # 轉換為行格式
-    macro_daily = macro_daily.reset_index()
-    macro_daily["timestamp"] = pd.to_datetime(macro_daily["timestamp"])
+    # 只要有「任何一個」特徵出現 NaN (例如部分 API 失敗、或是全數失敗)
+    macro_cols = [cfg["col"] for cfg in FRED_SERIES_CONFIG.values()]
+    cache_path = os.path.join(DATA_DIR, "macro_cache.csv")
+    
+    if macro_daily[macro_cols].isna().any().any():
+        if os.path.exists(cache_path):
+            logger.warning("⚠️ FRED API 抓取異常 (部分或全數失敗)。啟動【真實歷史快取】降級模式...")
+            cached_macro = pd.read_csv(cache_path, parse_dates=["timestamp"])
+            # 將快取轉為以 timestamp 為 index，並 reindex 到當前 trading_days，然後 ffill
+            cached_macro = cached_macro.drop_duplicates("timestamp").set_index("timestamp")
+            macro_daily = cached_macro.reindex(trading_days, method="ffill")
+            macro_daily.index.name = "timestamp"
+            macro_daily = macro_daily.reset_index()
+        else:
+            logger.warning("⚠️ FRED API 異常且找不到本地快取！啟動合成數據降級模式 (Synthetic Fallback)...")
+            macro_daily["cpi_yoy"] = 3.0
+            macro_daily["unemployment_rate"] = 4.0
+            macro_daily["pmi_manufacturing"] = 50.0
+            macro_daily["fed_funds_rate"] = 5.0
+            macro_daily["credit_spread"] = 2.0
+            macro_daily["yield_curve_slope"] = -0.5
+            macro_daily = macro_daily.reset_index()
+            macro_daily["timestamp"] = pd.to_datetime(macro_daily["timestamp"])
+    else:
+        # 下載成功，將最新的正確資料存入快取
+        macro_daily = macro_daily.reset_index()
+        macro_daily["timestamp"] = pd.to_datetime(macro_daily["timestamp"])
+        macro_daily_unique = macro_daily.drop_duplicates("timestamp")
+        macro_daily_unique.to_csv(cache_path, index=False)
+        logger.info("總經數據快取已更新。")
+
 
     # 廣播至所有標的（總經數據對所有資產相同）
     frames = [
