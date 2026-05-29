@@ -3,7 +3,7 @@ execution/broker_base.py — Broker Adapter Abstraction Layer
 =============================================================
 
 Defines the interface contract that every broker adapter must satisfy.
-All concrete implementations (simulated paper-trading, live Alpaca REST,
+All concrete implementations (simulated paper-trading, live Moomoo API,
 FIX-protocol brokers, etc.) inherit from ``BrokerBase`` and implement
 its abstract methods.
 

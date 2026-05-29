@@ -79,12 +79,12 @@
 | API | 實盤延遲 | Paper 環境品質 | 最佳用途 | 關鍵限制 |
 |:--|:--|:--|:--|:--|
 | **IBKR (TWS)** | < 100ms | ✅ **無失真** — 網路拓樸與撮合邏輯與實盤 1:1 一致 | 🏆 HFT / 延遲敏感型首選 | 需自費訂閱 L1/L2 數據、API 學習曲線陡峭 |
-| **Alpaca** | ~14ms | ⚠️ **模擬延遲悖論** — 內部引擎導致 700ms~數秒延遲；免費版僅 IEX | 中低頻 / Python 生態首選 | ⛔ 嚴禁高頻 |
+| **Moomoo** | ~50ms | ✅ **優質模擬環境** — FutuOpenD 提供穩定且低延遲的模擬交易 | 中低頻 / 亞洲開發者首選 | 需保持 FutuOpenD 常駐運行 |
 | **Tradier** | < 100ms | ⚠️ 強制 15 分鐘延遲，無 WebSocket | 選擇權多腿策略首選 | 需外掛 Polygon/Databento |
 
-### Alpaca 防禦性架構指令
+### Moomoo 防禦性架構指令
 
-> 基於 Nexus Quant OS 的日頻交易特性，Alpaca 是最佳選擇。  
+> 基於 Nexus Quant OS 的日頻交易特性，Moomoo (FutuOpenD) 是最佳選擇。  
 > 但必須嚴格遵守以下防禦規則：
 
 ```
@@ -106,17 +106,16 @@
      → 每日首步 cancel_all_orders() + 讀取真實持倉
 ```
 
-### IBKR 未來升級路線
+### 實盤升級路線
 
-當系統成熟後，建議從 Alpaca 遷移至 IBKR：
+當系統成熟後，建議從 Moomoo Paper 遷移至 Moomoo Live：
 
 ```
 遷移檢查清單:
   □ 系統穩定運行 > 3 個月
   □ Paper Trading Sharpe > 1.0
-  □ 準備好 L1/L2 數據訂閱費用
-  □ 學習 IBKR TWS API (ib_insync 套件)
-  □ 建立 IBKR Paper Account 並行測試 2 週
+  □ 存入實盤資金並解鎖即時行情
+  □ 建立 Moomoo Live Account 並行測試 2 週
   □ 確認撮合邏輯一致後切換
 ```
 
@@ -226,7 +225,7 @@ Step 4: 圖譜部署 (Knowledge Graph)
 │  └─ Qwen 2.5 72B 裁判覆核 (L2 事實檢查)                    │
 │                     ↓                                        │
 │  [EXECUTION] 執行層                                          │
-│  ├─ 路由至 Alpaca API                                        │
+│  ├─ 路由至 Moomoo API                                        │
 │  ├─ 封裝 Bracket Orders (OCO/OTO) 鎖雙邊敞口               │
 │  └─ API 對帳修正 Agent Memory (State Reconciliation)        │
 │                     ↓                                        │
@@ -269,7 +268,7 @@ Step 4: 圖譜部署 (Knowledge Graph)
 ```
 推論: Fin-R1 (7B, 本地) → Qwen 2.5 72B (雲端覆核)
 記憶: JSON Profile + ChromaDB + Working Memory
-交易: Alpaca Paper → IBKR (未來)
+交易: Moomoo Paper → Moomoo Live
 圖譜: SEC EDGAR + GLEIF → Fin-R1 提取 → Neo4j
 監控: pytest + Telegram Bot + Great Expectations
 部署: Docker + cron + caffeinate (Mac) / GitHub Actions (雲端)

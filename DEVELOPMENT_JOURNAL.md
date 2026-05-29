@@ -274,7 +274,7 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 
 | 階段 | 功能 | 預估時程 |
 |:--|:--|:--|
-| Phase 5 | Alpaca Paper Trading API 串接 | 1-2 週 |
+| Phase 5 | Moomoo Paper Trading API 串接 | 1-2 週 |
 | Phase 6 | AI 個人理財顧問 Agent | 2-3 週 |
 | Phase 7 | Alpha 獵手 Agent (供應鏈追蹤) | 4-8 週 |
 | 持續 | 自動化 Bug 偵測 + 持續創新 | 永續 |
