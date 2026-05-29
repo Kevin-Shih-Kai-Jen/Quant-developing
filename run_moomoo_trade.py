@@ -478,15 +478,23 @@ def execute_on_moomoo(
         print(f"\n    {len(filled)} filled, {len(rejected)} rejected")
 
         # ── Post-trade snapshot ───────────────────────────────────────
-        post_account = broker.get_account()
-        post_positions = broker.get_positions()
-        report.post_equity = post_account.equity
-        report.post_cash = post_account.cash
+        try:
+            post_account = broker.get_account()
+            post_positions = broker.get_positions()
+            report.post_equity = post_account.equity
+            report.post_cash = post_account.cash
+        except Exception as post_err:
+            logger.warning("Post-trade account query failed: %s", post_err)
+            post_account = None
+            post_positions = []
 
         print("\n  📊 Post-Trade:")
-        print(f"    Equity: ${post_account.equity:,.2f} | "
-              f"Cash: ${post_account.cash:,.2f} | "
-              f"Positions: {len(post_positions)}")
+        if post_account is not None:
+            print(f"    Equity: ${post_account.equity:,.2f} | "
+                  f"Cash: ${post_account.cash:,.2f} | "
+                  f"Positions: {len(post_positions)}")
+        else:
+            print("    ⚠️ Account query failed — no post-trade data")
 
         if post_positions:
             print(f"\n    {'Symbol':<8} {'Qty':>6} {'Cost':>8} {'MktVal':>12} {'P&L':>10}")

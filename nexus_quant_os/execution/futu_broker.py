@@ -46,6 +46,7 @@ try:
         OrderType,
         ModifyOrderOp,
         SecurityFirm,
+        Currency,
     )
 
     _MOOMOO_AVAILABLE = True
@@ -311,40 +312,49 @@ class FutuBroker(BrokerBase):
     # ── BrokerBase implementation ─────────────────────────────────
 
     def get_account(self) -> AccountSnapshot:
-        """Query the Moomoo SIMULATE account for balances.
+        """Query the Moomoo SIMULATE account for USD balances.
 
         Returns
         -------
         AccountSnapshot
             Current equity, cash, and buying power from the paper
-            trading account.
+            trading account (USD currency).
+
+        Raises
+        ------
+        RuntimeError
+            If the API call fails, so callers can distinguish errors
+            from a legitimately empty account.
         """
         ctx = None
         try:
             ctx = self._get_trade_ctx()
-            ret, data = ctx.accinfo_query(trd_env=self._TRD_ENV)
+            # Fix: explicitly request USD currency to avoid getting
+            # HKD or other currency sub-accounts as the first row
+            ret, data = ctx.accinfo_query(
+                trd_env=self._TRD_ENV,
+                currency=Currency.USD,
+            )
             if ret != RET_OK:
-                logger.error("accinfo_query failed: %s", data)
-                return AccountSnapshot(
-                    equity=0.0, cash=0.0, buying_power=0.0,
-                    timestamp=datetime.now(timezone.utc),
-                )
+                raise RuntimeError(f"accinfo_query failed: {data}")
+
+            if data.empty:
+                raise RuntimeError("accinfo_query returned empty DataFrame")
 
             row = data.iloc[0]
             equity = float(row.get("total_assets", 0.0))
             cash = float(row.get("cash", 0.0))
             buying_power = float(row.get("avl_withdrawal_cash", cash))
 
+            logger.info(
+                "Account snapshot: equity=$%.2f, cash=$%.2f, buying_power=$%.2f",
+                equity, cash, buying_power,
+            )
+
             return AccountSnapshot(
                 equity=equity,
                 cash=cash,
                 buying_power=buying_power,
-                timestamp=datetime.now(timezone.utc),
-            )
-        except Exception as exc:
-            logger.error("get_account failed: %s", exc)
-            return AccountSnapshot(
-                equity=0.0, cash=0.0, buying_power=0.0,
                 timestamp=datetime.now(timezone.utc),
             )
         finally:

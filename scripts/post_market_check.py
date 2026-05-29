@@ -16,6 +16,10 @@ import sys
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_DIR)
 
+# Load environment variables from .env
+from dotenv import load_dotenv
+load_dotenv(os.path.join(PROJECT_DIR, ".env"))
+
 from nexus_quant_os.notifications.discord_notifier import DiscordNotifier
 
 
@@ -32,6 +36,10 @@ def main() -> None:
         broker = FutuBroker()
         acct = broker.get_account()
         positions = broker.get_positions()
+
+        # Sanity check: warn if equity is suspiciously zero despite connection success
+        if acct.equity <= 0 and len(positions) > 0:
+            print(f"⚠️ Warning: equity=${acct.equity:.2f} but {len(positions)} positions exist — data inconsistency")
 
         pos_lines = []
         for p in positions:
@@ -58,6 +66,15 @@ def main() -> None:
             severity="warning",
         )
         print(f"⚠️ OpenD not available: {e}")
+
+    except RuntimeError as e:
+        # get_account() now raises RuntimeError on API failures
+        notifier.send_alert(
+            title="Post-Market Check — API Error",
+            message=f"Account query failed: `{e}`\n\nMoomoo OpenD connected but returned an error.",
+            severity="error",
+        )
+        print(f"❌ API error: {e}")
 
     except Exception as e:
         notifier.send_alert(
