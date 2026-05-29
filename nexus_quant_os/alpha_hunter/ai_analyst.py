@@ -150,7 +150,11 @@ Output ONLY valid JSON. No markdown, no explanation.
                 return default
 
         def safe_bool(val):
-            return bool(val) if isinstance(val, bool) else False
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.lower() in ("true", "1", "yes")
+            return False
 
         def safe_list(val, max_items=5, max_chars=200):
             if not isinstance(val, list):

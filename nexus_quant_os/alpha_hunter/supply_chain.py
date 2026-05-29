@@ -150,7 +150,7 @@ If no relationships found, output: []
                     # 快取損毀 → 刪除快取
                     try:
                         self._cache_path.unlink()
-                    except:
+                    except Exception:
                         pass
         
         # 如果沒有 API Key 就提早回傳空 Graph

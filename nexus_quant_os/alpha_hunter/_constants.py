@@ -7,7 +7,9 @@ alpha_hunter/_constants.py — 全域常數
 from pathlib import Path
 
 # ── 資料儲存路徑 ──────────────────────────────────────────
-ALPHA_HUNTER_DATA_DIR = Path("data/alpha_hunter")
+# Bug #13 fix: Use project root instead of CWD-relative path
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]  # nexus_quant_os/alpha_hunter → nexus_quant_os → project root
+ALPHA_HUNTER_DATA_DIR = _PROJECT_ROOT / "data" / "alpha_hunter"
 EDGAR_CACHE_DIR       = ALPHA_HUNTER_DATA_DIR / "edgar_cache"
 SUPPLY_CHAIN_CACHE    = ALPHA_HUNTER_DATA_DIR / "supply_chain.json"
 SIGNALS_HISTORY_DIR   = ALPHA_HUNTER_DATA_DIR / "signals"

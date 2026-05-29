@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import yfinance as yf
 
 from .models import (
@@ -48,9 +49,16 @@ class AlphaSignalGenerator:
     ) -> list[AlphaSignal]:
         """對整個投資範圍生成信號。"""
         if universe is not None:
+            # Bug #4 fix: use a local scanner copy instead of mutating shared state
+            original_universe = self._scanner._universe
             self._scanner._universe = universe
             
-        scan_results = self._scanner.scan_universe()
+        try:
+            scan_results = self._scanner.scan_universe()
+        finally:
+            # Bug #4 fix: always restore original universe
+            if universe is not None:
+                self._scanner._universe = original_universe
         candidates = [r for r in scan_results if r.is_candidate]
         
         signals = []
@@ -72,8 +80,17 @@ class AlphaSignalGenerator:
         """對單一公司生成信號。"""
         scan = self._scanner.scan_single(ticker)
         if scan is None:
-            # Fallback to minimal scan result if no financials
-            scan = ScanResult(ticker=ticker, company_name=ticker, latest_statement=None)
+            # Bug #5 fix: create a minimal ScanResult with a stub FinancialStatement
+            # instead of passing None for a non-Optional field
+            from .models import FinancialStatement
+            stub_stmt = FinancialStatement(
+                ticker=ticker, cik="", company_name=ticker,
+                filing_date=datetime.now(timezone.utc),
+                period_end=datetime.now(timezone.utc),
+                fiscal_year=datetime.now(timezone.utc).year,
+                fiscal_quarter=1,
+            )
+            scan = ScanResult(ticker=ticker, company_name=ticker, latest_statement=stub_stmt)
             
         return self._generate_from_scan(scan, include_supply_chain=True, include_ai_analysis=True)
         
@@ -133,7 +150,7 @@ class AlphaSignalGenerator:
                 return False
                 
             close_prices = df["Close"]
-            if isinstance(close_prices, yf.utils.utils.pd.DataFrame):
+            if isinstance(close_prices, pd.DataFrame):
                 close_prices = close_prices.iloc[:, 0]
                 
             ma200 = close_prices.rolling(TECHNICAL_MA_PERIOD).mean().iloc[-1]

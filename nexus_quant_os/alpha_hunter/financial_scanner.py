@@ -62,13 +62,14 @@ class FinancialScanner:
 
     def scan_single(self, ticker: str) -> Optional[ScanResult]:
         """掃描單一公司。"""
-        stmt = self._edgar.get_latest_financials(ticker)
-        if stmt is None:
+        # Bug #6 fix: fetch 2 quarters in one call to avoid redundant download in _evaluate
+        history = self._edgar.get_financials_history(ticker, n_quarters=2)
+        if not history:
             return None
-            
-        return self._evaluate(stmt)
 
-    def _evaluate(self, stmt: FinancialStatement) -> ScanResult:
+        return self._evaluate(history[0], history)
+
+    def _evaluate(self, stmt: FinancialStatement, history: list[FinancialStatement] | None = None) -> ScanResult:
         """根據 5 項條件評估一家公司。"""
         result = ScanResult(
             ticker=stmt.ticker,
@@ -81,9 +82,7 @@ class FinancialScanner:
             result.passes_revenue_growth = True
 
         # 條件 2: 毛利率改善 (比較當季 vs 上季)
-        # 取得歷史以做比較
-        history = self._edgar.get_financials_history(stmt.ticker, n_quarters=2)
-        if len(history) >= 2:
+        if history is not None and len(history) >= 2:
             prev_stmt = history[1]
             if stmt.gross_margin is not None and prev_stmt.gross_margin is not None:
                 if stmt.gross_margin > prev_stmt.gross_margin:

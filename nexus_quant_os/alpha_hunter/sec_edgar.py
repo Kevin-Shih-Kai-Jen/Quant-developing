@@ -252,10 +252,15 @@ class SECEdgarClient:
             if tag not in gaap:
                 return
             units = gaap[tag].get("units", {})
-            if "USD" not in units and "shares" not in units:
+            # Bug #2/#7 fix: support USD, shares, USD/shares, pure
+            items = []
+            for unit_key in ("USD", "shares", "USD/shares", "pure"):
+                if unit_key in units:
+                    items = units[unit_key]
+                    break
+            if not items:
                 return
-            
-            items = units.get("USD", []) or units.get("shares", [])
+
             for item in items:
                 form = item.get("form")
                 if form not in ("10-K", "10-Q"):
@@ -263,12 +268,14 @@ class SECEdgarClient:
                 end_date = item.get("end")
                 if not end_date:
                     continue
-                
+
                 try:
                     val = float(item.get("val", 0))
                 except (ValueError, TypeError):
                     continue
-                
+
+                start_date = item.get("start")  # None for instant (balance sheet)
+
                 if end_date not in periods:
                     periods[end_date] = {
                         "filing_date": item.get("filed"),
@@ -276,8 +283,25 @@ class SECEdgarClient:
                         "fp": item.get("fp", ""),
                         "form": form,
                     }
-                
-                # 優先使用 10-Q 的值，如果是 10-K 也可以，但後蓋前 (確保最新的 filed 生效)
+
+                # Bug #1 fix: For period-based items (income/cashflow with start+end),
+                # keep only the shortest duration (= single quarter, not YTD).
+                # For instant items (balance sheet, no start), always overwrite.
+                if start_date is not None:
+                    existing_start = periods[end_date].get(f"_start_{target_field}")
+                    if existing_start is not None:
+                        # Compare durations: shorter = more granular (quarterly)
+                        try:
+                            new_duration = (datetime.strptime(end_date, "%Y-%m-%d") -
+                                           datetime.strptime(start_date, "%Y-%m-%d")).days
+                            old_duration = (datetime.strptime(end_date, "%Y-%m-%d") -
+                                           datetime.strptime(existing_start, "%Y-%m-%d")).days
+                            if new_duration >= old_duration:
+                                continue  # Existing value is shorter (more granular), keep it
+                        except ValueError:
+                            continue
+                    periods[end_date][f"_start_{target_field}"] = start_date
+
                 periods[end_date][target_field] = val
 
         # 映射表
@@ -316,6 +340,17 @@ class SECEdgarClient:
                         quarter = int(fp[1])
                     except ValueError:
                         pass
+                elif fp == "FY":
+                    # This is an annual (10-K full-year) period.
+                    # Check if the revenue duration is > 100 days → annual, skip it
+                    rev_start = fields.get("_start_revenue")
+                    if rev_start is not None:
+                        try:
+                            dur = (period_end - datetime.strptime(rev_start, "%Y-%m-%d").replace(tzinfo=timezone.utc)).days
+                            if dur > 100:
+                                continue  # Skip annual periods — we only want quarterly
+                        except ValueError:
+                            pass
                 
                 # 計算欄位
                 revenue = fields.get("revenue")
@@ -331,11 +366,11 @@ class SECEdgarClient:
                 if operating_income is not None and revenue is not None and abs(revenue) > 1e-6:
                     operating_margin = operating_income / revenue
                 
-                long_term_debt = fields.get("long_term_debt", 0.0)
-                short_term_debt = fields.get("short_term_debt", 0.0)
+                long_term_debt = fields.get("long_term_debt")
+                short_term_debt = fields.get("short_term_debt")
                 total_debt = None
-                if "long_term_debt" in fields or "short_term_debt" in fields:
-                    total_debt = long_term_debt + short_term_debt
+                if long_term_debt is not None or short_term_debt is not None:
+                    total_debt = (long_term_debt or 0.0) + (short_term_debt or 0.0)
                     
                 debt_to_equity = None
                 if total_debt is not None and total_equity is not None and total_equity > 1e-6:
