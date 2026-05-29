@@ -33,6 +33,7 @@ Author : Nexus Quant OS -- Risk Engineering Division
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -145,6 +146,7 @@ class MarketRegimeDetector:
             raise ValueError(f"n_regimes must be 2 or 3, got {self.config.n_regimes}")
         self._hmm: GaussianHMM | None = None
         self._is_fitted: bool = False
+        self._lock = threading.Lock()
         # Maps HMM state index -> MarketRegime after post-hoc labelling
         self._state_to_regime: dict[int, int] = {}
 
@@ -176,42 +178,43 @@ class MarketRegimeDetector:
         -------
         self
         """
-        if observations.ndim != 2:
-            raise ValueError(
-                f"observations must be 2-D [T, F], got shape {observations.shape}"
+        with self._lock:
+            if observations.ndim != 2:
+                raise ValueError(
+                    f"observations must be 2-D [T, F], got shape {observations.shape}"
+                )
+
+            n_samples, n_features = observations.shape
+            logger.info(
+                "Fitting GaussianHMM | regimes=%d  samples=%d  features=%d  "
+                "cov=%s  iter=%d",
+                self.config.n_regimes, n_samples, n_features,
+                self.config.covariance_type, self.config.n_iter,
             )
 
-        n_samples, n_features = observations.shape
-        logger.info(
-            "Fitting GaussianHMM | regimes=%d  samples=%d  features=%d  "
-            "cov=%s  iter=%d",
-            self.config.n_regimes, n_samples, n_features,
-            self.config.covariance_type, self.config.n_iter,
-        )
+            self._hmm = GaussianHMM(
+                n_components=self.config.n_regimes,
+                covariance_type=self.config.covariance_type,
+                n_iter=self.config.n_iter,
+                tol=self.config.tol,
+                random_state=self.config.random_state,
+                verbose=False,
+            )
 
-        self._hmm = GaussianHMM(
-            n_components=self.config.n_regimes,
-            covariance_type=self.config.covariance_type,
-            n_iter=self.config.n_iter,
-            tol=self.config.tol,
-            random_state=self.config.random_state,
-            verbose=False,
-        )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self._hmm.fit(observations, lengths=lengths)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self._hmm.fit(observations, lengths=lengths)
+            self._is_fitted = True
+            self._label_regimes()
 
-        self._is_fitted = True
-        self._label_regimes()
-
-        logger.info(
-            "HMM training complete | converged=%s | log_prob=%.4f",
-            self._hmm.monitor_.converged,
-            self._hmm.monitor_.history[-1] if self._hmm.monitor_.history else float("nan"),
-        )
-        self._log_transition_matrix()
-        return self
+            logger.info(
+                "HMM training complete | converged=%s | log_prob=%.4f",
+                self._hmm.monitor_.converged,
+                self._hmm.monitor_.history[-1] if self._hmm.monitor_.history else float("nan"),
+            )
+            self._log_transition_matrix()
+            return self
 
     def _label_regimes(self) -> None:
         """Post-hoc label states by mean of realised_vol (feature index 1).
@@ -278,43 +281,45 @@ class MarketRegimeDetector:
             Shape ``[W, F]`` (W >= 1).  Uses the LAST timestep's
             posterior as the "current" regime probability.
         """
-        self._check_fitted()
-        assert self._hmm is not None
-        if observation_window.ndim == 1:
-            observation_window = observation_window.reshape(1, -1)
+        with self._lock:
+            self._check_fitted()
+            assert self._hmm is not None
+            if observation_window.ndim == 1:
+                observation_window = observation_window.reshape(1, -1)
+            if observation_window.shape[0] < 5:
+                logger.warning("HMM observation window too short (%d rows) for reliable regime detection", observation_window.shape[0])
 
-        # posteriors shape: [W, N]
-        posteriors        = self._hmm.predict_proba(observation_window)
-        current_posterior = posteriors[-1]   # [N]
+            # posteriors shape: [W, N]
+            posteriors        = self._hmm.predict_proba(observation_window)
+            current_posterior = posteriors[-1]   # [N]
 
-        # Map HMM state indices to named regime indices
-        regime_probs = np.zeros(len(MarketRegime))
-        for state_idx, prob in enumerate(current_posterior):
-            regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
-            if regime_idx < len(regime_probs):
-                regime_probs[regime_idx] += prob
+            # Map HMM state indices to named regime indices
+            regime_probs = np.zeros(len(MarketRegime))
+            for state_idx, prob in enumerate(current_posterior):
+                regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
+                if regime_idx < len(regime_probs):
+                    regime_probs[regime_idx] += prob
 
-        # Viterbi most likely path
-        viterbi_states    = self._hmm.predict(observation_window)
-        most_likely_state = int(viterbi_states[-1])
-        most_likely_regime = self._state_to_regime.get(most_likely_state, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
+            # Use argmax of posterior instead of Viterbi to avoid redundant forward pass
+            most_likely_state = int(np.argmax(current_posterior))
+            most_likely_regime = self._state_to_regime.get(most_likely_state, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
 
-        danger_probability = float(
-            sum(regime_probs[r] for r in DANGEROUS_REGIMES if r < len(regime_probs))
-        )
-        bear_probability = float(
-            sum(regime_probs[r] for r in BEAR_REGIMES if r < len(regime_probs))
-        )
-        is_dangerous = danger_probability >= self.config.danger_threshold
+            danger_probability = float(
+                sum(regime_probs[r] for r in DANGEROUS_REGIMES if r < len(regime_probs))
+            )
+            bear_probability = float(
+                sum(regime_probs[r] for r in BEAR_REGIMES if r < len(regime_probs))
+            )
+            is_dangerous = danger_probability >= self.config.danger_threshold
 
-        return RegimePrediction(
-            most_likely_regime=most_likely_regime,
-            regime_probabilities=regime_probs,
-            danger_probability=danger_probability,
-            bear_probability=bear_probability,
-            is_dangerous=is_dangerous,
-            regime_label=MarketRegime(most_likely_regime).name,
-        )
+            return RegimePrediction(
+                most_likely_regime=most_likely_regime,
+                regime_probabilities=regime_probs,
+                danger_probability=danger_probability,
+                bear_probability=bear_probability,
+                is_dangerous=is_dangerous,
+                regime_label=MarketRegime(most_likely_regime).name,
+            )
 
     def predict_sequence(self, observations: np.ndarray) -> np.ndarray:
         """Return danger probabilities for every timestep.
@@ -323,16 +328,17 @@ class MarketRegimeDetector:
         -------
         np.ndarray  shape: [T]
         """
-        self._check_fitted()
-        assert self._hmm is not None
-        posteriors   = self._hmm.predict_proba(observations)   # [T, N]
-        danger_probs = np.zeros(len(posteriors))
-        for t in range(len(posteriors)):
-            for state_idx, p in enumerate(posteriors[t]):
-                regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
-                if regime_idx in DANGEROUS_REGIMES:
-                    danger_probs[t] += p
-        return danger_probs
+        with self._lock:
+            self._check_fitted()
+            assert self._hmm is not None
+            posteriors   = self._hmm.predict_proba(observations)   # [T, N]
+            danger_probs = np.zeros(len(posteriors))
+            for t in range(len(posteriors)):
+                for state_idx, p in enumerate(posteriors[t]):
+                    regime_idx = self._state_to_regime.get(state_idx, MarketRegime.BEAR_HIGH_VOL.value)  # safe default
+                    if regime_idx in DANGEROUS_REGIMES:
+                        danger_probs[t] += p
+            return danger_probs
 
     # -----------------------------------------------------------------
     # 3c. Utilities

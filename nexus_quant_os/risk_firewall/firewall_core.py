@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
@@ -174,6 +175,7 @@ class IntelligentRiskFirewall:
         self.ood_detector = ood_detector
         self.config       = config or FirewallConfig()
         self._is_fitted   = False
+        self._lock = threading.Lock()
 
     @classmethod
     def from_configs(
@@ -202,13 +204,14 @@ class IntelligentRiskFirewall:
             Shape ``[T, F]`` — historical observations from calm/normal
             market periods only.
         """
-        logger.info("Fitting IntelligentRiskFirewall on %d samples...",
-                    len(normal_market_features))
-        self.hmm_detector.fit(normal_market_features)
-        self.ood_detector.fit(normal_market_features)
-        self._is_fitted = True
-        logger.info("Firewall fit complete.")
-        return self
+        with self._lock:
+            logger.info("Fitting IntelligentRiskFirewall on %d samples...",
+                        len(normal_market_features))
+            self.hmm_detector.fit(normal_market_features)
+            self.ood_detector.fit(normal_market_features)
+            self._is_fitted = True
+            logger.info("Firewall fit complete.")
+            return self
 
     # -----------------------------------------------------------------
     # 3b. Scale-factor computation
@@ -349,49 +352,50 @@ class IntelligentRiskFirewall:
         FirewallDecision
             Full audit record including adjusted weights.
         """
-        if not self._is_fitted:
-            raise RuntimeError(
-                "IntelligentRiskFirewall not fitted. Call .fit() first."
+        with self._lock:
+            if not self._is_fitted:
+                raise RuntimeError(
+                    "IntelligentRiskFirewall not fitted. Call .fit() first."
+                )
+
+            # 1. Run detectors
+            hmm_pred   = self.hmm_detector.predict(market_features)
+            ood_result = self.ood_detector.detect(market_features[-1:])
+
+            # 2. Resolve risk tier
+            tier, reason = self._resolve_tier(hmm_pred, ood_result)
+
+            # 3. Compute scale factor
+            scale = self._compute_scale_factor(
+                tier, hmm_pred.danger_probability, hmm_pred.bear_probability, ood_result.combined_anomaly_score
             )
 
-        # 1. Run detectors
-        hmm_pred   = self.hmm_detector.predict(market_features)
-        ood_result = self.ood_detector.detect(market_features[-1:])
+            # 4. Apply scaling
+            adjusted_weights = raw_weights * scale
 
-        # 2. Resolve risk tier
-        tier, reason = self._resolve_tier(hmm_pred, ood_result)
+            log_fn = logger.warning if tier != RiskTier.GREEN else logger.info
+            log_fn(
+                "[Firewall] tier=%s  scale=%.4f  hmm_extreme=%.3f  hmm_bear=%.3f  "
+                "ood_score=%.3f  reason=%s",
+                tier.name, scale,
+                hmm_pred.danger_probability,
+                hmm_pred.bear_probability,
+                ood_result.combined_anomaly_score,
+                reason,
+            )
 
-        # 3. Compute scale factor
-        scale = self._compute_scale_factor(
-            tier, hmm_pred.danger_probability, hmm_pred.bear_probability, ood_result.combined_anomaly_score
-        )
-
-        # 4. Apply scaling
-        adjusted_weights = raw_weights * scale
-
-        log_fn = logger.warning if tier != RiskTier.GREEN else logger.info
-        log_fn(
-            "[Firewall] tier=%s  scale=%.4f  hmm_extreme=%.3f  hmm_bear=%.3f  "
-            "ood_score=%.3f  reason=%s",
-            tier.name, scale,
-            hmm_pred.danger_probability,
-            hmm_pred.bear_probability,
-            ood_result.combined_anomaly_score,
-            reason,
-        )
-
-        return FirewallDecision(
-            raw_weights=raw_weights.copy(),
-            adjusted_weights=adjusted_weights,
-            scale_factor=scale,
-            risk_tier=tier,
-            hmm_danger_prob=hmm_pred.danger_probability,
-            hmm_bear_prob=hmm_pred.bear_probability,
-            ood_combined_score=ood_result.combined_anomaly_score,
-            hmm_regime_label=hmm_pred.regime_label,
-            ood_is_flagged=ood_result.is_ood,
-            veto_reason=reason,
-        )
+            return FirewallDecision(
+                raw_weights=raw_weights.copy(),
+                adjusted_weights=adjusted_weights,
+                scale_factor=scale,
+                risk_tier=tier,
+                hmm_danger_prob=hmm_pred.danger_probability,
+                hmm_bear_prob=hmm_pred.bear_probability,
+                ood_combined_score=ood_result.combined_anomaly_score,
+                hmm_regime_label=hmm_pred.regime_label,
+                ood_is_flagged=ood_result.is_ood,
+                veto_reason=reason,
+            )
 
 
 # =====================================================================

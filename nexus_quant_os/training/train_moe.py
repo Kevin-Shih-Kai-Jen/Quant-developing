@@ -738,6 +738,7 @@ def save_checkpoint(
         },
         "scaler_mean":  scaler.mean_.tolist(),
         "scaler_scale": scaler.scale_.tolist(),
+        "scaler_var":   scaler.var_.tolist(),
         "firewall_bytes": firewall_bytes,
         "assets":       assets,
         "val_sharpe":   val_sharpe,
@@ -790,7 +791,10 @@ def load_checkpoint(
     scaler        = StandardScaler()
     scaler.mean_  = np.array(ckpt["scaler_mean"],  dtype=np.float64)
     scaler.scale_ = np.array(ckpt["scaler_scale"], dtype=np.float64)
-    scaler.var_   = scaler.scale_ ** 2
+    if "scaler_var" in ckpt:
+        scaler.var_ = np.array(ckpt["scaler_var"], dtype=np.float64)
+    else:
+        scaler.var_ = scaler.scale_ ** 2  # fallback for old checkpoints
     scaler.n_features_in_ = len(scaler.mean_)
     scaler.n_samples_seen_ = 1000  # Dummy value for strict sklearn API compliance
 

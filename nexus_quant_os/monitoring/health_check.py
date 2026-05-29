@@ -227,11 +227,13 @@ def check_price_anomaly(
     threshold_pct : float
         Maximum tolerable single-day return (0.15 = 15%).
     """
-    if "close" not in prices_df.columns:
+    required_cols = {"close", "asset_id", "timestamp"}
+    missing = required_cols - set(prices_df.columns)
+    if missing:
         return CheckResult(
             name="Price Anomaly",
             severity=Severity.WARNING,
-            message="No 'close' column — skipping anomaly check",
+            message=f"Missing columns {missing} — skipping anomaly check",
         )
 
     df = prices_df.copy()

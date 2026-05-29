@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -75,6 +76,7 @@ class GeminiClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self._last_request_time: float = 0.0
+        self._rate_lock = threading.Lock()
 
         if not self.api_key:
             logger.warning(
@@ -106,12 +108,13 @@ class GeminiClient:
 
     def _enforce_rate_limit(self) -> None:
         """確保相鄰請求間隔不低於 _MIN_REQUEST_INTERVAL 秒。"""
-        now = time.monotonic()
-        elapsed = now - self._last_request_time
-        if elapsed < self._MIN_REQUEST_INTERVAL:
-            wait_time = self._MIN_REQUEST_INTERVAL - elapsed
-            time.sleep(wait_time)
-        self._last_request_time = time.monotonic()
+        with self._rate_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < self._MIN_REQUEST_INTERVAL:
+                wait_time = self._MIN_REQUEST_INTERVAL - elapsed
+                time.sleep(wait_time)
+            self._last_request_time = time.monotonic()
 
     def _call_gemini_with_retry(self, prompt: str) -> str | None:
         """對 Gemini generateContent 端點發送請求，含指數退避重試。"""

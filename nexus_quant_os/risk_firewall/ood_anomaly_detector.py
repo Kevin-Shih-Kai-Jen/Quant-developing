@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -203,6 +204,7 @@ class OODAnomalyDetector:
         self._ae_model: _MarketAutoencoder | None = None
         self._scaler   = StandardScaler()
         self._is_fitted = False
+        self._lock = threading.Lock()
 
         # Training MSE statistics (for z-scoring)
         self._train_mse_mean: float = 0.0
@@ -232,89 +234,90 @@ class OODAnomalyDetector:
         normal_observations : np.ndarray
             Shape ``[T, F]`` — only *normal/calm* market periods.
         """
-        if normal_observations.ndim != 2:
-            raise ValueError(f"Expected [T, F], got shape {normal_observations.shape}")
+        with self._lock:
+            if normal_observations.ndim != 2:
+                raise ValueError(f"Expected [T, F], got shape {normal_observations.shape}")
 
-        T, F = normal_observations.shape
-        logger.info("Fitting OOD detectors | samples=%d  features=%d", T, F)
+            T, F = normal_observations.shape
+            logger.info("Fitting OOD detectors | samples=%d  features=%d", T, F)
 
-        # 1. Scale features
-        X_scaled = self._scaler.fit_transform(normal_observations)   # [T, F]
-        self._train_min = X_scaled.min(0)
-        self._train_max = X_scaled.max(0)
-        X_01     = (X_scaled - self._train_min) / (
-            self._train_max - self._train_min + 1e-8
-        )   # [T, F]  normalised to [0, 1]
+            # 1. Scale features
+            X_scaled = self._scaler.fit_transform(normal_observations)   # [T, F]
+            self._train_min = X_scaled.min(0)
+            self._train_max = X_scaled.max(0)
+            X_01     = (X_scaled - self._train_min) / (
+                self._train_max - self._train_min + 1e-8
+            )   # [T, F]  normalised to [0, 1]
 
-        # 2. Train Isolation Forest
-        logger.info("Training Isolation Forest...")
-        self._if_model = IsolationForest(
-            n_estimators=self.config.n_estimators,
-            contamination=self.config.contamination,
-            random_state=self.config.if_random_state,
-            n_jobs=-1,
-        )
-        self._if_model.fit(X_scaled)
+            # 2. Train Isolation Forest
+            logger.info("Training Isolation Forest...")
+            self._if_model = IsolationForest(
+                n_estimators=self.config.n_estimators,
+                contamination=self.config.contamination,
+                random_state=self.config.if_random_state,
+                n_jobs=-1,
+            )
+            self._if_model.fit(X_scaled)
 
-        train_if_scores     = self._if_model.decision_function(X_scaled)
-        self._if_score_min  = float(train_if_scores.min())
-        self._if_score_max  = float(train_if_scores.max())
-        logger.info(
-            "IF score range on train set: [%.4f, %.4f]",
-            self._if_score_min, self._if_score_max,
-        )
+            train_if_scores     = self._if_model.decision_function(X_scaled)
+            self._if_score_min  = float(train_if_scores.min())
+            self._if_score_max  = float(train_if_scores.max())
+            logger.info(
+                "IF score range on train set: [%.4f, %.4f]",
+                self._if_score_min, self._if_score_max,
+            )
 
-        # 3. Train Autoencoder
-        logger.info("Training Autoencoder (epochs=%d)...", self.config.ae_epochs)
-        self._ae_model = _MarketAutoencoder(
-            input_dim=F,
-            hidden_dims=self.config.ae_hidden_dims,
-            latent_dim=self.config.ae_latent_dim,
-        ).to(self._device)
+            # 3. Train Autoencoder
+            logger.info("Training Autoencoder (epochs=%d)...", self.config.ae_epochs)
+            self._ae_model = _MarketAutoencoder(
+                input_dim=F,
+                hidden_dims=self.config.ae_hidden_dims,
+                latent_dim=self.config.ae_latent_dim,
+            ).to(self._device)
 
-        X_tensor = torch.tensor(X_01, dtype=torch.float32)
-        dataset  = TensorDataset(X_tensor)
-        loader   = DataLoader(
-            dataset, batch_size=self.config.ae_batch_size, shuffle=True
-        )
+            X_tensor = torch.tensor(X_01, dtype=torch.float32)
+            dataset  = TensorDataset(X_tensor)
+            loader   = DataLoader(
+                dataset, batch_size=self.config.ae_batch_size, shuffle=True
+            )
 
-        optimizer = optim.Adam(
-            self._ae_model.parameters(),
-            lr=self.config.ae_lr,
-            weight_decay=self.config.ae_weight_decay,
-        )
+            optimizer = optim.Adam(
+                self._ae_model.parameters(),
+                lr=self.config.ae_lr,
+                weight_decay=self.config.ae_weight_decay,
+            )
 
-        self._ae_model.train()
-        for epoch in range(self.config.ae_epochs):
-            epoch_loss = 0.0
-            for (batch,) in loader:
-                batch = batch.to(self._device)
-                optimizer.zero_grad()
-                loss = nn.functional.mse_loss(self._ae_model(batch), batch)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-            if (epoch + 1) % 10 == 0:
-                logger.debug(
-                    "AE Epoch [%3d/%d]  avg_loss=%.6f",
-                    epoch + 1, self.config.ae_epochs, epoch_loss / len(loader),
-                )
+            self._ae_model.train()
+            for epoch in range(self.config.ae_epochs):
+                epoch_loss = 0.0
+                for (batch,) in loader:
+                    batch = batch.to(self._device)
+                    optimizer.zero_grad()
+                    loss = nn.functional.mse_loss(self._ae_model(batch), batch)
+                    loss.backward()
+                    optimizer.step()
+                    epoch_loss += loss.item()
+                if (epoch + 1) % 10 == 0:
+                    logger.debug(
+                        "AE Epoch [%3d/%d]  avg_loss=%.6f",
+                        epoch + 1, self.config.ae_epochs, epoch_loss / len(loader),
+                    )
 
-        # 4. Compute training MSE distribution for z-scoring
-        self._ae_model.eval()
-        with torch.no_grad():
-            X_dev       = X_tensor.to(self._device)
-            train_mse   = self._ae_model.reconstruction_mse(X_dev).cpu().numpy()
-        self._train_mse_mean = float(train_mse.mean())
-        self._train_mse_std  = float(train_mse.std()) + 1e-8
-        logger.info(
-            "AE training MSE | mean=%.6f  std=%.6f  threshold=%.6f",
-            self._train_mse_mean, self._train_mse_std,
-            self._train_mse_mean + self.config.ae_mse_zscore_threshold * self._train_mse_std,
-        )
+            # 4. Compute training MSE distribution for z-scoring
+            self._ae_model.eval()
+            with torch.no_grad():
+                X_dev       = X_tensor.to(self._device)
+                train_mse   = self._ae_model.reconstruction_mse(X_dev).cpu().numpy()
+            self._train_mse_mean = float(train_mse.mean())
+            self._train_mse_std  = float(train_mse.std()) + 1e-8
+            logger.info(
+                "AE training MSE | mean=%.6f  std=%.6f  threshold=%.6f",
+                self._train_mse_mean, self._train_mse_std,
+                self._train_mse_mean + self.config.ae_mse_zscore_threshold * self._train_mse_std,
+            )
 
-        self._is_fitted = True
-        return self
+            self._is_fitted = True
+            return self
 
     # -----------------------------------------------------------------
     # 3b. Inference
@@ -332,53 +335,54 @@ class OODAnomalyDetector:
         -------
         AnomalyResult
         """
-        self._check_fitted()
-        assert self._if_model is not None
-        assert self._ae_model is not None
-        if features.ndim == 1:
-            features = features.reshape(1, -1)
+        with self._lock:
+            self._check_fitted()
+            assert self._if_model is not None
+            assert self._ae_model is not None
+            if features.ndim == 1:
+                features = features.reshape(1, -1)
 
-        # Scale
-        X_scaled = self._scaler.transform(features)   # [B, F]
-        assert self._train_min is not None and self._train_max is not None
-        X_01 = (X_scaled - self._train_min) / (self._train_max - self._train_min + 1e-8)
-        # Do not clip — allow extreme OOD values to produce higher reconstruction error
+            # Scale
+            X_scaled = self._scaler.transform(features)   # [B, F]
+            assert self._train_min is not None and self._train_max is not None
+            X_01 = (X_scaled - self._train_min) / (self._train_max - self._train_min + 1e-8)
+            # Do not clip — allow extreme OOD values to produce higher reconstruction error
 
-        # Isolation Forest score
-        raw_if    = self._if_model.decision_function(X_scaled)   # [B]
-        assert self._if_score_max is not None and self._if_score_min is not None
-        if_range  = self._if_score_max - self._if_score_min + 1e-8
-        if_score_01 = float(
-            np.clip(
-                (self._if_score_max - raw_if.mean()) / if_range, 0.0, 1.0
+            # Isolation Forest score
+            raw_if    = self._if_model.decision_function(X_scaled)   # [B]
+            assert self._if_score_max is not None and self._if_score_min is not None
+            if_range  = self._if_score_max - self._if_score_min + 1e-8
+            if_score_01 = float(
+                np.clip(
+                    (self._if_score_max - raw_if.mean()) / if_range, 0.0, 1.0
+                )
             )
-        )
 
-        # Autoencoder MSE z-score
-        self._ae_model.eval()   # type: ignore[union-attr]
-        with torch.no_grad():
-            X_tensor    = torch.tensor(X_01, dtype=torch.float32).to(self._device)
-            mse_samples = self._ae_model.reconstruction_mse(X_tensor)   # type: ignore[union-attr]
-            ae_mse      = float(mse_samples.mean().cpu())
+            # Autoencoder MSE z-score
+            self._ae_model.eval()   # type: ignore[union-attr]
+            with torch.no_grad():
+                X_tensor    = torch.tensor(X_01, dtype=torch.float32).to(self._device)
+                mse_samples = self._ae_model.reconstruction_mse(X_tensor)   # type: ignore[union-attr]
+                ae_mse      = float(mse_samples.mean().cpu())
 
-        ae_zscore   = (ae_mse - self._train_mse_mean) / self._train_mse_std
-        ae_score_01 = float(np.clip(ae_zscore / self.config.ae_mse_zscore_threshold, 0.0, 1.0))
+            ae_zscore   = (ae_mse - self._train_mse_mean) / self._train_mse_std
+            ae_score_01 = float(np.clip(ae_zscore / self.config.ae_mse_zscore_threshold, 0.0, 1.0))
 
-        # Either detector alone can trigger OOD
-        combined = max(
-            self.config.if_weight * if_score_01 + self.config.ae_weight * ae_score_01,
-            if_score_01 * 0.85,  # IF alone at 85% can trigger
-            ae_score_01 * 0.85,  # AE alone at 85% can trigger
-        )
-        is_ood = combined >= self.config.combined_threshold
+            # Either detector alone can trigger OOD
+            combined = max(
+                self.config.if_weight * if_score_01 + self.config.ae_weight * ae_score_01,
+                if_score_01 * 0.85,  # IF alone at 85% can trigger
+                ae_score_01 * 0.85,  # AE alone at 85% can trigger
+            )
+            is_ood = combined >= self.config.combined_threshold
 
-        return AnomalyResult(
-            isolation_forest_score=if_score_01,
-            ae_reconstruction_mse=ae_mse,
-            ae_zscore=ae_zscore,
-            combined_anomaly_score=combined,
-            is_ood=is_ood,
-        )
+            return AnomalyResult(
+                isolation_forest_score=if_score_01,
+                ae_reconstruction_mse=ae_mse,
+                ae_zscore=ae_zscore,
+                combined_anomaly_score=combined,
+                is_ood=is_ood,
+            )
 
     def _check_fitted(self) -> None:
         if not self._is_fitted:

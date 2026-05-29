@@ -392,113 +392,120 @@ def execute_on_moomoo(
         report.error = str(e)
         return report
 
-    # ── Clean up stale orders ─────────────────────────────────────
-    # Cancel any SUBMITTED orders that were placed outside market hours
-    # and never filled.  These freeze cash and cause negative balances.
-    print("  ▸ Cleaning up stale pending orders...")
-    n_cancelled = broker.cancel_all_pending()
-    if n_cancelled > 0:
-        print(f"    🧹 Cancelled {n_cancelled} stale order(s)")
-        import time
-        time.sleep(2)  # wait for account to update
-    else:
-        print("    ✅ No stale orders")
+    try:
+        # ── Clean up stale orders ─────────────────────────────────────
+        # Cancel any SUBMITTED orders that were placed outside market hours
+        # and never filled.  These freeze cash and cause negative balances.
+        print("  ▸ Cleaning up stale pending orders...")
+        n_cancelled = broker.cancel_all_pending()
+        if n_cancelled > 0:
+            print(f"    🧹 Cancelled {n_cancelled} stale order(s)")
+            import time
+            time.sleep(2)  # wait for account to update
+        else:
+            print("    ✅ No stale orders")
 
-    # ── Pre-trade snapshot ────────────────────────────────────────
-    account = broker.get_account()
-    positions = broker.get_positions()
-    report.pre_equity = account.equity
-    report.pre_cash = account.cash
+        # ── Pre-trade snapshot ────────────────────────────────────────
+        account = broker.get_account()
+        positions = broker.get_positions()
+        report.pre_equity = account.equity
+        report.pre_cash = account.cash
 
-    print("    ✅ Connected (SIMULATE)")
-    print(f"    Equity    : ${account.equity:,.2f}")
-    print(f"    Cash      : ${account.cash:,.2f}")
-    print(f"    Positions : {len(positions)}\n")
+        print("    ✅ Connected (SIMULATE)")
+        print(f"    Equity    : ${account.equity:,.2f}")
+        print(f"    Cash      : ${account.cash:,.2f}")
+        print(f"    Positions : {len(positions)}\n")
 
-    # ── Target allocation ─────────────────────────────────────────
-    print("  ▸ Target Allocation:")
-    print(f"    {'Symbol':<8} {'Weight':>8} {'Target $':>12}")
-    print(f"    {'─'*8} {'─'*8} {'─'*12}")
-    for sym, w in sorted(target_weights.items(), key=lambda x: -x[1]):
-        print(f"    {sym:<8} {w:>7.1%} ${w * account.equity:>11,.2f}")
+        # ── Target allocation ─────────────────────────────────────────
+        print("  ▸ Target Allocation:")
+        print(f"    {'Symbol':<8} {'Weight':>8} {'Target $':>12}")
+        print(f"    {'─'*8} {'─'*8} {'─'*12}")
+        for sym, w in sorted(target_weights.items(), key=lambda x: -x[1]):
+            print(f"    {sym:<8} {w:>7.1%} ${w * account.equity:>11,.2f}")
 
-    cash_pct = metadata.get("cash_pct", 0)
-    print(f"    {'CASH':<8} {cash_pct/100:>7.1%} "
-          f"${account.equity * cash_pct/100:>11,.2f}")
-    print(f"\n    Risk: {metadata.get('risk_tier')} | "
-          f"Regime: {metadata.get('regime')} | "
-          f"Optimizer: {metadata.get('opt_mode')}\n")
+        cash_pct = metadata.get("cash_pct", 0)
+        print(f"    {'CASH':<8} {cash_pct/100:>7.1%} "
+              f"${account.equity * cash_pct/100:>11,.2f}")
+        print(f"\n    Risk: {metadata.get('risk_tier')} | "
+              f"Regime: {metadata.get('regime')} | "
+              f"Optimizer: {metadata.get('opt_mode')}\n")
 
-    # ── Reconcile ─────────────────────────────────────────────────
-    print("  ▸ Reconciling portfolio...")
-    intents = broker.reconcile(target_weights)
+        # ── Reconcile ─────────────────────────────────────────────────
+        print("  ▸ Reconciling portfolio...")
+        intents = broker.reconcile(target_weights)
 
-    if not intents:
-        print("    ✅ Portfolio aligned — no trades needed\n")
-        # Still capture post-trade state
-        report.post_equity = account.equity
-        report.post_cash = account.cash
+        if not intents:
+            print("    ✅ Portfolio aligned — no trades needed\n")
+            # Still capture post-trade state
+            report.post_equity = account.equity
+            report.post_cash = account.cash
+            return report
+
+        print(f"    {len(intents)} trade intents:")
+        for intent in intents:
+            emoji = "🟢" if intent.side == "BUY" else "🔴"
+            print(f"    {emoji} {intent.side:>4} {intent.symbol:<8} "
+                  f"x{intent.qty:>5.0f}  {intent.reason}")
+
+        # ── Execute ───────────────────────────────────────────────────
+        print(f"\n  ▸ Executing {len(intents)} orders on SIMULATE...")
+        results = broker.execute(intents)
+
+        filled = [r for r in results if r.status == "FILLED"]
+        rejected = [r for r in results if r.status == "REJECTED"]
+
+        # Populate report
+        for r in results:
+            report.trades.append(TradeRecord(
+                symbol=r.symbol,
+                side=r.side,
+                qty=r.qty,
+                price=r.filled_price,
+                status=r.status,
+                order_id=r.order_id,
+            ))
+        report.n_filled = len(filled)
+        report.n_rejected = len(rejected)
+
+        print("\n  📋 Results:")
+        print(f"    {'Symbol':<8} {'Side':>4} {'Qty':>6} {'Price':>10} {'Status':>10}")
+        print(f"    {'─'*8} {'─'*4} {'─'*6} {'─'*10} {'─'*10}")
+        for r in results:
+            emoji = "✅" if r.status == "FILLED" else "❌"
+            print(f"    {r.symbol:<8} {r.side:>4} {r.qty:>6.0f} "
+                  f"${r.filled_price:>9.2f} {emoji} {r.status}")
+
+        print(f"\n    {len(filled)} filled, {len(rejected)} rejected")
+
+        # ── Post-trade snapshot ───────────────────────────────────────
+        post_account = broker.get_account()
+        post_positions = broker.get_positions()
+        report.post_equity = post_account.equity
+        report.post_cash = post_account.cash
+
+        print("\n  📊 Post-Trade:")
+        print(f"    Equity: ${post_account.equity:,.2f} | "
+              f"Cash: ${post_account.cash:,.2f} | "
+              f"Positions: {len(post_positions)}")
+
+        if post_positions:
+            print(f"\n    {'Symbol':<8} {'Qty':>6} {'Cost':>8} {'MktVal':>12} {'P&L':>10}")
+            print(f"    {'─'*8} {'─'*6} {'─'*8} {'─'*12} {'─'*10}")
+            for p in post_positions:
+                print(f"    {p.symbol:<8} {p.qty:>6.0f} ${p.avg_cost:>7.2f} "
+                      f"${p.market_value:>11,.2f} ${p.unrealized_pl:>9.2f}")
+
+        print(f"\n{SEP}")
+        print(f"  ✅ COMPLETE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{SEP}\n")
+
         return report
-
-    print(f"    {len(intents)} trade intents:")
-    for intent in intents:
-        emoji = "🟢" if intent.side == "BUY" else "🔴"
-        print(f"    {emoji} {intent.side:>4} {intent.symbol:<8} "
-              f"x{intent.qty:>5.0f}  {intent.reason}")
-
-    # ── Execute ───────────────────────────────────────────────────
-    print(f"\n  ▸ Executing {len(intents)} orders on SIMULATE...")
-    results = broker.execute(intents)
-
-    filled = [r for r in results if r.status == "FILLED"]
-    rejected = [r for r in results if r.status == "REJECTED"]
-
-    # Populate report
-    for r in results:
-        report.trades.append(TradeRecord(
-            symbol=r.symbol,
-            side=r.side,
-            qty=r.qty,
-            price=r.filled_price,
-            status=r.status,
-            order_id=r.order_id,
-        ))
-    report.n_filled = len(filled)
-    report.n_rejected = len(rejected)
-
-    print("\n  📋 Results:")
-    print(f"    {'Symbol':<8} {'Side':>4} {'Qty':>6} {'Price':>10} {'Status':>10}")
-    print(f"    {'─'*8} {'─'*4} {'─'*6} {'─'*10} {'─'*10}")
-    for r in results:
-        emoji = "✅" if r.status == "FILLED" else "❌"
-        print(f"    {r.symbol:<8} {r.side:>4} {r.qty:>6.0f} "
-              f"${r.filled_price:>9.2f} {emoji} {r.status}")
-
-    print(f"\n    {len(filled)} filled, {len(rejected)} rejected")
-
-    # ── Post-trade snapshot ───────────────────────────────────────
-    post_account = broker.get_account()
-    post_positions = broker.get_positions()
-    report.post_equity = post_account.equity
-    report.post_cash = post_account.cash
-
-    print("\n  📊 Post-Trade:")
-    print(f"    Equity: ${post_account.equity:,.2f} | "
-          f"Cash: ${post_account.cash:,.2f} | "
-          f"Positions: {len(post_positions)}")
-
-    if post_positions:
-        print(f"\n    {'Symbol':<8} {'Qty':>6} {'Cost':>8} {'MktVal':>12} {'P&L':>10}")
-        print(f"    {'─'*8} {'─'*6} {'─'*8} {'─'*12} {'─'*10}")
-        for p in post_positions:
-            print(f"    {p.symbol:<8} {p.qty:>6.0f} ${p.avg_cost:>7.2f} "
-                  f"${p.market_value:>11,.2f} ${p.unrealized_pl:>9.2f}")
-
-    print(f"\n{SEP}")
-    print(f"  ✅ COMPLETE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{SEP}\n")
-
-    return report
+    finally:
+        if hasattr(broker, 'close'):
+            broker.close()
+        elif hasattr(broker, '_trade_ctx') and broker._trade_ctx:
+            broker._trade_ctx.close()
+        logger.info("FutuBroker connection closed.")
 
 
 # ═══════════════════════════════════════════════════════════════════

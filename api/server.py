@@ -653,12 +653,14 @@ async def get_performance():
             return {"status": "empty", "message": "No performance history yet.", "data": []}
 
         initial_value = history[0].get("equity", 100_000.0)
+        result_history = []
         for entry in history:
-            entry["cumulative_return"] = (entry["equity"] / initial_value - 1) * 100
+            new_entry = {**entry, "cumulative_return": (entry["equity"] / initial_value - 1) * 100}
+            result_history.append(new_entry)
 
         return {
             "status": "success",
-            "data": history,
+            "data": result_history,
             "summary": {
                 "initial_value": initial_value,
                 "current_value": history[-1].get("equity", 0),

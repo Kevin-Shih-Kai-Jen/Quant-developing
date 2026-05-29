@@ -160,6 +160,14 @@ def _validate_dataframe(
             f"Fix: call df.sort_values('{timestamp_col}') upstream."
         )
 
+    if ts.duplicated().any():
+        n_dups = ts.duplicated().sum()
+        logger.warning(
+            "[%s] DataFrame has %d duplicate timestamps in '%s'. "
+            "merge_asof will use last occurrence.",
+            name, n_dups, timestamp_col,
+        )
+
 
 def _post_merge_integrity_check(
     aligned: pd.DataFrame,

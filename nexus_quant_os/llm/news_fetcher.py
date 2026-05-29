@@ -18,8 +18,9 @@ Author : Nexus Quant OS — Data Engineering Division
 from __future__ import annotations
 
 import logging
-import time
 import re
+import threading
+import time
 from email.utils import parsedate_to_datetime
 import hashlib
 from dataclasses import dataclass, field
@@ -113,6 +114,7 @@ class NewsFetcher:
 
         self._cache: list[str] = []
         self._cache_time: float = 0.0
+        self._cache_lock = threading.Lock()
 
         logger.info(
             "NewsFetcher 初始化 | %d 個來源 | cache_ttl=%ds | max_age=%dh",
@@ -133,10 +135,11 @@ class NewsFetcher:
             去重、清理過的新聞標題列表（最新在前）。
         """
         # 使用快取（若仍有效）
-        now = time.monotonic()
-        if self._cache and (now - self._cache_time) < self.cache_ttl:
-            logger.debug("使用快取的 %d 條標題", len(self._cache))
-            return self._cache[:max_headlines]
+        with self._cache_lock:
+            now = time.monotonic()
+            if self._cache and (now - self._cache_time) < self.cache_ttl:
+                logger.debug("使用快取的 %d 條標題", len(self._cache))
+                return self._cache[:max_headlines]
 
         # 從所有來源抓取
         all_headlines: list[str] = []
@@ -168,8 +171,9 @@ class NewsFetcher:
             ]
 
         # 更新快取
-        self._cache = all_headlines
-        self._cache_time = now
+        with self._cache_lock:
+            self._cache = all_headlines
+            self._cache_time = time.monotonic()
 
         result = self._diversity_sample(all_headlines, max_headlines)
         logger.info(

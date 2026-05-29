@@ -122,6 +122,8 @@ class FutuBroker(BrokerBase):
             raise ImportError(
                 "moomoo-api is not installed.  Run: pip install moomoo-api"
             )
+        if self._TRD_ENV is None:
+            raise RuntimeError("FutuBroker._TRD_ENV is None — moomoo-api not properly loaded")
 
         self._host = host
         self._port = port
@@ -643,6 +645,14 @@ class FutuBroker(BrokerBase):
                         order_id="ERROR",
                         status="CANCELLED",
                     ))
+            submitted_orders = [r for r in results if r.status == "SUBMITTED"]
+            if submitted_orders:
+                logger.error(
+                    "PARTIAL FAILURE: %d orders already submitted before error. "
+                    "Manual reconciliation required. Symbols: %s",
+                    len(submitted_orders),
+                    [o.symbol for o in submitted_orders],
+                )
         finally:
             if ctx is not None:
                 ctx.close()
