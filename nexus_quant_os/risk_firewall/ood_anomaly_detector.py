@@ -342,7 +342,7 @@ class OODAnomalyDetector:
         X_scaled = self._scaler.transform(features)   # [B, F]
         assert self._train_min is not None and self._train_max is not None
         X_01 = (X_scaled - self._train_min) / (self._train_max - self._train_min + 1e-8)
-        X_01 = np.clip(X_01, 0.0, 1.0)                # [B, F]
+        # Do not clip — allow extreme OOD values to produce higher reconstruction error
 
         # Isolation Forest score
         raw_if    = self._if_model.decision_function(X_scaled)   # [B]

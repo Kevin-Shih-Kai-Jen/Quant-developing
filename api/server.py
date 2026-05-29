@@ -500,6 +500,14 @@ async def run_pipeline():
             reasoning=reasoning
         )
 
+      except HTTPException:
+        raise
+      except (KeyError, FileNotFoundError, EnvironmentError) as e:
+        logger.exception("Pipeline configuration/service error")
+        raise HTTPException(status_code=503, detail=str(e))
+      except (ValueError, TypeError) as e:
+        logger.exception("Pipeline input validation error")
+        raise HTTPException(status_code=422, detail=str(e))
       except Exception as e:
         logger.exception("Pipeline execution failed")
         raise HTTPException(status_code=500, detail=str(e))

@@ -347,12 +347,13 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
         spy_df_bt = aligned_df[aligned_df["asset_id"] == "SPY"].copy().reset_index(drop=True)
         spy_feat_matrix, _ = engineer_features(spy_df_bt)
         # 使用回測的驗證期日期範圍來切片 SPY 特徵（避免索引不匹配）
-        spy_dates = aligned_df[aligned_df["asset_id"] == "SPY"]["timestamp"].dt.normalize()
-        val_start_date = dates_val[0]
-        val_end_date = dates_val[-1]
-        date_mask = (spy_dates >= val_start_date) & (spy_dates <= val_end_date)
-        # 在 engineer_features 處理後的 df 中，用日期範圍取子集
-        spy_val_feat = spy_feat_matrix[date_mask.values[-len(spy_feat_matrix):]] if len(date_mask) > len(spy_feat_matrix) else spy_feat_matrix[-len(dates_val):]
+        # engineer_features 只從頭部丟棄 NaN 行，因此尾部與原始日期對齊
+        spy_remaining_dates = spy_df_bt['timestamp'].unique()[-len(spy_feat_matrix):]
+        date_mask = np.isin(spy_remaining_dates, dates_val)
+        spy_val_feat = spy_feat_matrix[date_mask]
+        assert len(spy_val_feat) == len(dates_val), (
+            f"SPY feature alignment failed: {len(spy_val_feat)} vs {len(dates_val)}"
+        )
 
         # 確保 SPY 特徵長度與回測期一致
         min_len = min(len(w_scaled), len(spy_val_feat))

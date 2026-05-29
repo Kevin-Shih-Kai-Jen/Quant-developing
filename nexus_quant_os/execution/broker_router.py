@@ -57,7 +57,7 @@ try:
     from zoneinfo import ZoneInfo
     _ET: Any = ZoneInfo("America/New_York")
 except ImportError:  # Python < 3.9 fallback
-    _ET = timezone(timedelta(hours=-4))  # EDT approximation
+    _ET = timezone(timedelta(hours=-5))  # EST fallback (conservative)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -776,8 +776,8 @@ class SimulatedBroker(BrokerBase):
         """
         import json
 
-        account = self.get_account()
         positions = self.get_positions()
+        account = self.get_account(_positions=positions)
         # Fix S1: use ET timezone for snapshot date
         today_str = datetime.now(_ET).date().isoformat()
 

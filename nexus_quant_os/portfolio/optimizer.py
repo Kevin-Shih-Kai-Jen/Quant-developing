@@ -283,7 +283,13 @@ class PortfolioOptimizer:
             prob.solve(solver=cp.OSQP, max_iter=4000)
         except Exception as e:
             logger.error("CVXPY solve error: %s", e)
-            
+            w_fallback = np.zeros(N)
+            if self.idx_shy is not None:
+                w_fallback[self.idx_shy] = 1.0
+            else:
+                w_fallback[:] = 1.0 / N
+            return w_fallback
+
         if prob.status in ["optimal", "optimal_inaccurate"] and w.value is not None:
             return np.array(w.value)
         else:
@@ -311,6 +317,9 @@ class PortfolioOptimizer:
         total = w.sum()
         if total > 0:
             w = w / total
+        else:
+            # 所有權重被清零 → 回退到等權
+            w[:] = 1.0 / len(w)
             
         return w
 

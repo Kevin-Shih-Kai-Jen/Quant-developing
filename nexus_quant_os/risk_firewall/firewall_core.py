@@ -242,13 +242,21 @@ class IntelligentRiskFirewall:
         composite = max(hmm_danger, hmm_bear, ood_score)
 
         if tier == RiskTier.WARNING:
-            lo, hi = cfg.hmm_warning_threshold, cfg.hmm_emergency_threshold
+            # Determine which threshold ranges to use based on which signal is dominant
+            if ood_score >= hmm_danger and ood_score >= hmm_bear:
+                lo, hi = cfg.ood_warning_threshold, cfg.ood_emergency_threshold
+            else:
+                lo, hi = cfg.hmm_warning_threshold, cfg.hmm_emergency_threshold
             t      = np.clip((composite - lo) / (hi - lo + 1e-8), 0.0, 1.0)
             t_s    = float(1.0 / (1.0 + np.exp(-10.0 * (t - 0.5))))
             return float(cfg.caution_scale + t_s * (cfg.warning_scale - cfg.caution_scale))
 
         if tier == RiskTier.CAUTION:
-            lo, hi = cfg.hmm_caution_threshold, cfg.hmm_warning_threshold
+            # Determine which threshold ranges to use based on which signal is dominant
+            if ood_score >= hmm_danger and ood_score >= hmm_bear:
+                lo, hi = cfg.ood_caution_threshold, cfg.ood_warning_threshold
+            else:
+                lo, hi = cfg.hmm_caution_threshold, cfg.hmm_warning_threshold
             t      = np.clip((composite - lo) / (hi - lo + 1e-8), 0.0, 1.0)
             t_s    = float(1.0 / (1.0 + np.exp(-10.0 * (t - 0.5))))
             return float(1.0 + t_s * (cfg.caution_scale - 1.0))

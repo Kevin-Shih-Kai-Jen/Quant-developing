@@ -264,6 +264,10 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
 
     # Apply firewall scaling
     scaled_weights = raw_weights * decision.scale_factor
+    # Long-only 模式：裁剪負權重（模擬模式下不允許做空）
+    neg_count = (scaled_weights < 0).sum()
+    if neg_count > 0:
+        logger.warning("裁剪 %d 個負權重 (long-only 模式)", neg_count)
     scaled_weights = np.maximum(scaled_weights, 0)
     weight_sum = scaled_weights.sum()
     if weight_sum > 1e-8:

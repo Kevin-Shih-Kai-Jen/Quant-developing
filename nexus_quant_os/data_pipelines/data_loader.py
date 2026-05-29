@@ -291,6 +291,7 @@ def load_macro_data(
             # 將快取轉為以 timestamp 為 index，並 reindex 到當前 trading_days，然後 ffill
             cached_macro = cached_macro.drop_duplicates("timestamp").set_index("timestamp")
             macro_daily = cached_macro.reindex(trading_days, method="ffill")
+            macro_daily = macro_daily.bfill()  # backfill any leading NaNs
             macro_daily.index.name = "timestamp"
             macro_daily = macro_daily.reset_index()
         else:

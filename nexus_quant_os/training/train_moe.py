@@ -80,7 +80,7 @@ WEIGHT_DECAY    = 1e-4
 PATIENCE        = 40
 TRAIN_RATIO     = 0.70
 VOL_LOOKBACK    = 20
-AUX_LOSS_COEFF  = 0.10  # 0.15 — 平衡負載 vs 學習信號（強制 Router 分配路由給 Expert-0）
+AUX_LOSS_COEFF  = 0.10  # 0.10 — 平衡負載 vs 學習信號（強制 Router 分配路由給 Expert-0）
 
 CHECKPOINT_DIR  = _PROJECT_ROOT / "nexus_quant_os" / "models" / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
@@ -540,7 +540,7 @@ def train_moe_router(
     # ── 建立 Router ───────────────────────────────────────────────
     router_config = RouterConfig(
         input_dim=INPUT_DIM,           # 63
-        num_experts=NUM_EXPERTS,       # 3
+        num_experts=NUM_EXPERTS,       # 4
         output_dim=OUTPUT_DIM,         # 7
         top_k=TOP_K,                   # 2
         noise_type=GatingNoiseType.GAUSSIAN,  # 訓練階段加入高斯噪音
@@ -826,7 +826,7 @@ def build_raw_daily_returns(
     valid_dates: list         = []
 
     for date in common_dates:
-        day_df = df[df["timestamp"].dt.normalize() == date].set_index("asset_id")
+        day_df = df[df["timestamp"].dt.normalize() == date].drop_duplicates(subset="asset_id").set_index("asset_id")
         if not all(a in day_df.index for a in assets):
             continue
         ret_row = []

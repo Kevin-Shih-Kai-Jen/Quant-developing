@@ -150,7 +150,8 @@ class GeminiClient:
             except requests.exceptions.ConnectionError:
                 logger.warning("Gemini 連線失敗 (attempt %d)。", attempt)
             except requests.exceptions.HTTPError as e:
-                logger.warning("Gemini HTTP 錯誤 (attempt %d): %s", attempt, e)
+                error_msg = str(e).replace(self.api_key, '***API_KEY***') if self.api_key else str(e)
+                logger.warning("Gemini HTTP 錯誤 (attempt %d): %s", attempt, error_msg)
             except (ValueError, KeyError) as e:
                 logger.warning("Gemini 解析失敗 (attempt %d): %s", attempt, e)
 

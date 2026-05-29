@@ -56,14 +56,15 @@ REGIME_PRIORS: Dict[str, Dict[str, float]] = {
         "TLT":  0.50,
     },
     # 極端衝擊：全現金（由防火牆強制執行，此處僅為記錄）
+    # 使用等權 1/N 使先驗在數學上有效（防止 normalization 產生 NaN）
     "EXTREME_SHOCK": {
-        "AVGO": 0.00,
-        "GLD":  0.00,
-        "IWM":  0.00,
-        "NVDA": 0.00,
-        "QQQ":  0.00,
-        "SPY":  0.00,
-        "TLT":  0.00,
+        "AVGO": 1/7,
+        "GLD":  1/7,
+        "IWM":  1/7,
+        "NVDA": 1/7,
+        "QQQ":  1/7,
+        "SPY":  1/7,
+        "TLT":  1/7,
     },
     # 中性 / 不確定：等權配置
     "NEUTRAL": {
@@ -188,6 +189,7 @@ class RegimeAllocator:
         regime_confidence: float,
         hmm_bear_prob: float = 0.0,
         hmm_danger_prob: float = 0.0,
+        asset_order: list[str] | None = None,
     ) -> np.ndarray:
         """將 MoE 預測權重與政體先驗混合。
 
@@ -203,6 +205,9 @@ class RegimeAllocator:
             HMM 判定熊市的後驗機率。
         hmm_danger_prob : float
             HMM 判定極端危險的後驗機率。
+        asset_order : list[str] | None
+            moe_weights 的資產順序。若與 self.assets 不同，
+            會自動重排 moe_weights 以匹配 self.assets。
 
         Returns
         -------
@@ -211,6 +216,15 @@ class RegimeAllocator:
         """
         cfg = self.config
         moe = np.asarray(moe_weights, dtype=np.float64).copy()
+
+        # ── 重排 moe_weights 以匹配 self.assets 排序 ─────────────
+        if asset_order is not None and list(asset_order) != self.assets:
+            order_map = {name: idx for idx, name in enumerate(asset_order)}
+            reordered = np.zeros_like(moe)
+            for i, asset in enumerate(self.assets):
+                if asset in order_map:
+                    reordered[i] = moe[order_map[asset]]
+            moe = reordered
 
         # ── 映射政體標籤 ───────────────────────────────────────────
         mapped_regime = self._map_regime_label(regime_label)

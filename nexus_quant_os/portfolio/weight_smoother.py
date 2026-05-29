@@ -259,8 +259,10 @@ class WeightSmoother:
 
         # ── 濾網 2：最小持倉天數鎖定 ──────────────────────────────
         # 如果持倉未滿 min_hold_days 且方向要反轉，則鎖定
-        new_direction = np.sign(ema_capped)
-        old_direction = np.sign(self._prev_smooth)
+        # 使用量級閾值而非 sign()：長倉 (>0.05)=+1, 出場 (<0.01)=-1, 中間=0
+        # sign() 在純多頭組合永遠 ≥ 0，無法偵測「縮倉→清倉」的方向反轉
+        new_direction = np.where(ema_capped > 0.05, 1, np.where(ema_capped < 0.01, -1, 0))
+        old_direction = np.where(self._prev_smooth > 0.05, 1, np.where(self._prev_smooth < 0.01, -1, 0))
         direction_reversal = (new_direction != old_direction) & (old_direction != 0)
         hold_locked = direction_reversal & (self._hold_counter < dynamic_hold)
 

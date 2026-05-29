@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import time
 import re
+from email.utils import parsedate_to_datetime
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -238,21 +239,34 @@ class NewsFetcher:
         resp.raise_for_status()
         xml_text = resp.text
 
-        # 簡易 XML 解析 — 提取 <title> 標籤內容
-        # 跳過第一個 <title>（通常是 feed 本身的標題）
-        titles = re.findall(
-            r"<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
-            xml_text,
-            re.DOTALL,
-        )
+        # 拆分為 <item> 區塊，逐一處理（支援 max_age 過濾）
+        items = re.findall(r"<item[^>]*>(.*?)</item>", xml_text, re.DOTALL)
 
-        # 跳過 feed 標題（第一個），清理 HTML entities
+        now_utc = datetime.now(timezone.utc)
         headlines: list[str] = []
-        for i, title in enumerate(titles):
-            if i == 0:
-                continue  # 跳過 feed 標題
+        for item_xml in items:
+            # max_age 過濾：解析 <pubDate>，跳過過時條目
+            try:
+                pub_match = re.search(
+                    r"<pubDate[^>]*>(.*?)</pubDate>", item_xml, re.DOTALL,
+                )
+                if pub_match and pub_match.group(1).strip():
+                    pub_dt = parsedate_to_datetime(pub_match.group(1).strip())
+                    if now_utc - pub_dt > self.max_age:
+                        continue  # skip stale
+            except Exception:
+                pass  # can't parse date, assume fresh
 
-            cleaned = self._clean_title(title.strip())
+            # 提取 <title>
+            title_match = re.search(
+                r"<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+                item_xml,
+                re.DOTALL,
+            )
+            if not title_match:
+                continue
+
+            cleaned = self._clean_title(title_match.group(1).strip())
             if cleaned and len(cleaned) > 10:  # 過濾太短的標題
                 headlines.append(cleaned)
 

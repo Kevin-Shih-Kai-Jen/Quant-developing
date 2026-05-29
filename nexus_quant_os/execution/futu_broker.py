@@ -67,7 +67,7 @@ try:
     from zoneinfo import ZoneInfo
     _ET: Any = ZoneInfo("America/New_York")
 except ImportError:
-    _ET = timezone(timedelta(hours=-4))
+    _ET = timezone(timedelta(hours=-5))  # EST fallback (conservative)
 
 
 # ═════════════════════════════════════════════════════════════════════

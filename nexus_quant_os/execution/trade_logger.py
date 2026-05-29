@@ -29,10 +29,11 @@ Author : Nexus Quant OS — Execution Engineering Division
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 from dataclasses import asdict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -115,31 +116,40 @@ class TradeLogger:
             Arbitrary key-value metadata describing *why* this trade
             was placed (e.g. model signals, firewall tier, etc.).
         """
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         filepath = self._trades_dir / f"{today_str}.json"
 
         record: dict[str, Any] = {
-            "logged_at": datetime.utcnow().isoformat(),
+            "logged_at": datetime.now(timezone.utc).isoformat(),
             "order": asdict(result),
             "reasoning": reasoning or {},
         }
 
-        # Read existing entries (if any) and append
-        existing: list[dict[str, Any]] = []
+        # Read existing entries (if any) and append — with file locking
         if filepath.exists():
-            try:
-                existing = json.loads(filepath.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning(
-                    "Corrupt trade log %s — starting fresh", filepath,
-                )
-
-        existing.append(record)
-
-        filepath.write_text(
-            json.dumps(existing, indent=2, default=_json_serialiser),
-            encoding="utf-8",
-        )
+            with open(filepath, 'r+', encoding='utf-8') as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    try:
+                        existing = json.load(f)
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(
+                            "Corrupt trade log %s — starting fresh", filepath,
+                        )
+                        existing = []
+                    existing.append(record)
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(existing, f, indent=2, default=_json_serialiser)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        else:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    json.dump([record], f, indent=2, default=_json_serialiser)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
         logger.debug(
             "Logged trade: %s %s %.2f @ %.4f → %s",
             result.side, result.symbol, result.qty,
@@ -162,11 +172,11 @@ class TradeLogger:
         positions : list[Position]
             All currently held positions.
         """
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         filepath = self._perf_dir / f"{today_str}.json"
 
         record: dict[str, Any] = {
-            "logged_at": datetime.utcnow().isoformat(),
+            "logged_at": datetime.now(timezone.utc).isoformat(),
             "account": asdict(snapshot),
             "positions": [asdict(p) for p in positions],
             "summary": {
@@ -203,7 +213,7 @@ class TradeLogger:
             sorted chronologically (oldest first).
         """
         all_records: list[dict[str, Any]] = []
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
 
         for offset in range(days):
             target_date = today - timedelta(days=offset)
@@ -240,7 +250,7 @@ class TradeLogger:
             List of daily snapshots sorted chronologically.
         """
         snapshots: list[dict[str, Any]] = []
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
 
         for offset in range(days):
             target_date = today - timedelta(days=offset)
