@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -27,7 +28,7 @@ import requests
 
 logger = logging.getLogger("nexus_quant_os.llm.gemma_client")
 
-_GEMMA_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
 
 _SENTIMENT_PROMPT_TEMPLATE = """\
 You are a quantitative finance sentiment analyst.
@@ -62,7 +63,7 @@ class GemmaClient:
     0.68
     """
 
-    _MIN_REQUEST_INTERVAL: float = 4.0  # 免費額度速率限制
+    _MIN_REQUEST_INTERVAL: float = 0.5  # Ollama 本地無需嚴格限速
 
     def __init__(
         self,
@@ -77,21 +78,14 @@ class GemmaClient:
         self.max_retries = max_retries
         self._last_request_time: float = 0.0
 
-        if not self.api_key:
-            logger.warning(
-                "Gemma API Key 未設定（使用與 Gemini 相同的 GEMINI_API_KEY）！"
-                "所有分析請求將回傳中性分數。"
-            )
-        else:
-            logger.info(
-                "GemmaClient 初始化完成 | model=%s  timeout=%.0fs",
-                self.model, self.timeout,
-            )
+        logger.info(
+            "GemmaClient 初始化完成 | model=%s  timeout=%.0fs",
+            self.model, self.timeout,
+        )
 
     def analyze_sentiment(self, headlines: list[str]) -> dict[str, Any]:
         """傳送新聞標題至 Gemma 4 並取得情緒分數。"""
-        if not self.api_key:
-            return dict(_NEUTRAL_FALLBACK)
+
         if not headlines:
             return dict(_NEUTRAL_FALLBACK)
 
@@ -194,5 +188,8 @@ class GemmaClient:
         try:
             score = float(score)
         except (TypeError, ValueError):
+            return dict(_NEUTRAL_FALLBACK)
+        if math.isnan(score):
+            logger.warning("LLM 回傳 NaN 分數，使用中性值。")
             return dict(_NEUTRAL_FALLBACK)
         return {"sentiment_score": max(-1.0, min(1.0, score)), "reason": str(reason)}

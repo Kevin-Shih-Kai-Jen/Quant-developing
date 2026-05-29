@@ -360,7 +360,7 @@ def _add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = 0.0
 
     # 前瞻報酬（訓練目標）：t+1 的報酬，在 t 時預測
-    df["forward_return"] = df.groupby("asset_id")["close"].pct_change().shift(-1)
+    df["forward_return"] = df.groupby("asset_id")["close"].pct_change().groupby(df["asset_id"]).shift(-1)
 
     return df
 

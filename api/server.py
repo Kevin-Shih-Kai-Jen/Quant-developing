@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sys
@@ -49,8 +50,8 @@ app = FastAPI(title="Nexus Quant OS API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,6 +72,8 @@ _news_fetcher: NewsFetcher | None = None
 # ── v2.1: 模擬交易引擎（Paper Trading） ──────────────────────────────
 _broker: SimulatedBroker | None = None
 _trade_logger: TradeLogger | None = None
+
+_pipeline_lock = asyncio.Lock()
 
 
 def _get_broker() -> SimulatedBroker:
@@ -140,6 +143,7 @@ async def advisor_upload(
     prompt: str = "請分析這張券商截圖，列出所有持倉",
 ):
     """Upload a broker screenshot for AI analysis."""
+    tmp_path = None
     try:
         advisor = _get_advisor()
         suffix = Path(file.filename or "img.png").suffix
@@ -149,11 +153,13 @@ async def advisor_upload(
             tmp_path = tmp.name
 
         response_text = advisor.chat(prompt, image_path=tmp_path)
-        os.unlink(tmp_path)
         return {"response": response_text}
     except Exception as e:
         logger.error("Advisor upload error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @app.get("/api/advisor/profile")
@@ -246,7 +252,8 @@ async def read_index():
 @app.post("/api/run_pipeline", response_model=PipelineResponse)
 async def run_pipeline():
     """Execute the full Nexus Quant OS DAG pipeline and return structured JSON results."""
-    try:
+    async with _pipeline_lock:
+      try:
         logger.info("Starting Pipeline execution via API")
         
         if not FRED_API_KEY:
@@ -382,8 +389,6 @@ async def run_pipeline():
             logger.warning("LLM 情緒引擎不可用，跳過調整: %s", e)
             sentiment_adjustment = 1.0
 
-        safe_weights = safe_weights * sentiment_adjustment
-
         # ── v2.0 Phase 2: 政體自適應配置 ─────────────────────────
         # 若 assets 變化（不同 checkpoint），重建 allocator 和 smoother
         if _last_assets != assets_list:
@@ -409,6 +414,8 @@ async def run_pipeline():
             hmm_bear_prob=firewall_result.hmm_bear_prob,
             hmm_danger_prob=firewall_result.hmm_danger_prob,
         )
+
+        regime_blended = regime_blended * sentiment_adjustment
 
         # ── v2.0 Phase 1: 權重平滑器 ──────────────────────────────
         if _smoother is None:
@@ -493,7 +500,7 @@ async def run_pipeline():
             reasoning=reasoning
         )
 
-    except Exception as e:
+      except Exception as e:
         logger.exception("Pipeline execution failed")
         raise HTTPException(status_code=500, detail=str(e))
 

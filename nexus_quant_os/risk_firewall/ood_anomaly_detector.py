@@ -362,7 +362,7 @@ class OODAnomalyDetector:
             ae_mse      = float(mse_samples.mean().cpu())
 
         ae_zscore   = (ae_mse - self._train_mse_mean) / self._train_mse_std
-        ae_score_01 = float(1.0 / (1.0 + np.exp(-max(ae_zscore - 1.0, 0.0))))
+        ae_score_01 = float(np.clip(ae_zscore / self.config.ae_mse_zscore_threshold, 0.0, 1.0))
 
         # Fuse
         combined = (

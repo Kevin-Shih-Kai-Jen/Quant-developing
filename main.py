@@ -127,7 +127,7 @@ RETURN_LOOKBACK      = 5          # 5 日收益率
 VOL_LOOKBACK         = 20         # 20 日已實現波動度
 
 # MoE Router 配置
-NUM_EXPERTS          = 3          # xLSTM / Mamba / TabNet (模擬)
+NUM_EXPERTS          = 4          # Tech-MLP / Macro-TabNet / Generalist-MLP / Sentiment-MLP
 TOP_K                = 2          # 每個時間步激活 2 個專家
 EXPERT_HIDDEN_DIM    = 64         # 每個專家的隱藏層維度
 

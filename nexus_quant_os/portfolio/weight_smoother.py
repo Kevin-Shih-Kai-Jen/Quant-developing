@@ -291,6 +291,11 @@ class WeightSmoother:
                 n_stable, n_hold_locked,
             )
 
+        # 確保權重總和為 1.0
+        total = final.sum()
+        if total > 0:
+            final = final / total
+
         return final.copy()
 
     def smooth_series(

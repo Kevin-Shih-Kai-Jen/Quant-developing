@@ -226,7 +226,7 @@ class MarketRegimeDetector:
         """
         assert self._hmm is not None
         # Robustly pick the volatility feature (index 1 if available, else 0)
-        vol_idx       = min(1, self._hmm.means_.shape[1] - 1)
+        vol_idx       = 0  # 波動率永遠在第一個欄位
         means         = self._hmm.means_[:, vol_idx]   # [N] — realised vol proxy
         sorted_states = np.argsort(means)               # ascending: low vol → high vol
 

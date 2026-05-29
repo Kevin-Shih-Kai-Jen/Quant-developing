@@ -98,9 +98,9 @@ class PortfolioOptimizer:
         self.asset_names = asset_names or []
         
         # 尋找特殊資產的索引
-        self.idx_shy = self.asset_names.index("SHY") if "SHY" in self.asset_names else -1
-        self.idx_sh = self.asset_names.index("SH") if "SH" in self.asset_names else -1
-        self.idx_psq = self.asset_names.index("PSQ") if "PSQ" in self.asset_names else -1
+        self.idx_shy = self.asset_names.index("SHY") if "SHY" in self.asset_names else None
+        self.idx_sh = self.asset_names.index("SH") if "SH" in self.asset_names else None
+        self.idx_psq = self.asset_names.index("PSQ") if "PSQ" in self.asset_names else None
 
     def optimize(
         self,
@@ -164,8 +164,13 @@ class PortfolioOptimizer:
             # 如果有歷史報酬，混合歷史均值（shrinkage）
             if returns_history is not None and len(returns_history) >= 20:
                 hist_mean = returns_history[-60:].mean(axis=0) * cfg.ann_factor
+                # Rank-normalize both to [0,1] before blending to avoid
+                # scale mismatch (portfolio allocations vs annualized returns)
+                def _rank_normalize(arr):
+                    ranks = np.argsort(np.argsort(arr)).astype(float)
+                    return ranks / max(len(arr) - 1, 1)
                 # Shrinkage: 60% MoE signal + 40% historical mean
-                expected_returns = 0.6 * expected_returns + 0.4 * hist_mean
+                expected_returns = 0.6 * _rank_normalize(expected_returns) + 0.4 * _rank_normalize(hist_mean)
 
             try:
                 weights = self._constrained_mvo(expected_returns, cov_matrix, moe_weights, hmm_bear_prob)
@@ -232,19 +237,19 @@ class PortfolioOptimizer:
             dyn_max = min(dyn_max, 0.50)  # 絕對上限 50%
             
             # 針對特殊資產 (SHY, SH, PSQ)
-            if i in (self.idx_sh, self.idx_psq):
+            if self.idx_sh is not None and i == self.idx_sh or self.idx_psq is not None and i == self.idx_psq:
                 if hmm_bear_prob < 0.50:
                     upper_bounds[i] = 0.0  # 非熊市禁止做空
                 else:
                     upper_bounds[i] = 0.15 # 熊市允許單一反向 ETF 最多 15%
-            elif i == self.idx_shy:
+            elif self.idx_shy is not None and i == self.idx_shy:
                 upper_bounds[i] = 1.0  # 現金特權兜底
             else:
                 upper_bounds[i] = dyn_max  # 多頭資產動態上限
 
         # 保證凸優化有解：確保所有資產上限總和大於等於 1.0
         # (排除現金，因為現金已經是 1.0。若排除現金後風險資產總和小於 1.0，則等比放大)
-        risk_asset_indices = [i for i in range(N) if i not in (self.idx_shy, self.idx_sh, self.idx_psq)]
+        risk_asset_indices = [i for i in range(N) if i not in {self.idx_shy, self.idx_sh, self.idx_psq} - {None}]
         risk_bound_sum = sum(upper_bounds[i] for i in risk_asset_indices)
         if risk_bound_sum < 1.0 and risk_bound_sum > 0:
             scale = 1.0 / risk_bound_sum
@@ -264,13 +269,13 @@ class PortfolioOptimizer:
         ]
         
         # 總反向 ETF 上限約束 (SH + PSQ <= 15%)
-        if self.idx_sh != -1 and self.idx_psq != -1:
+        if self.idx_sh is not None and self.idx_psq is not None:
             constraints.append(w[self.idx_sh] + w[self.idx_psq] <= 0.15)
             
         # 政體動態資金利用率
         if hmm_bear_prob < 0.50:
             # BULL: 強迫 100% 資金參與多頭市場，不留現金
-            if self.idx_shy != -1:
+            if self.idx_shy is not None:
                 constraints.append(w[self.idx_shy] == 0.0)
                 
         prob = cp.Problem(objective, constraints)
@@ -284,7 +289,7 @@ class PortfolioOptimizer:
         else:
             logger.warning("MVO (CVXPY) 未收斂狀態: %s，回退全現金", prob.status)
             w_fallback = np.zeros(N)
-            if self.idx_shy != -1:
+            if self.idx_shy is not None:
                 w_fallback[self.idx_shy] = 1.0
             else:
                 w_fallback[:] = 1.0 / N
@@ -299,8 +304,8 @@ class PortfolioOptimizer:
         """
         w = weights.copy().astype(np.float64)
         
-        # 清除小於 1e-4 的數值
-        w[w < 1e-4] = 0.0
+        # 清除小於 1e-6 的數值 (放寬閾值以保留 Risk Parity 的微小權重)
+        w[w < 1e-6] = 0.0
         
         # 重新歸一化以彌補捨去誤差
         total = w.sum()

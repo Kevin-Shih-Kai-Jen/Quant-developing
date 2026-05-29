@@ -44,6 +44,7 @@ try:
         TrdMarket,
         TrdSide,
         OrderType,
+        ModifyOrderOp,
         SecurityFirm,
     )
 
@@ -217,7 +218,7 @@ class FutuBroker(BrokerBase):
                 order_id = str(row["order_id"])
                 code = str(row.get("code", "?"))
                 ret2, _ = ctx.modify_order(
-                    modify_order_op="CANCEL",
+                    modify_order_op=ModifyOrderOp.CANCEL,
                     order_id=order_id,
                     qty=0,
                     price=0,
@@ -590,7 +591,7 @@ class FutuBroker(BrokerBase):
                 if ret == RET_OK:
                     order_id = str(data.iloc[0].get("order_id", ""))
                     logger.info(
-                        "Order FILLED: %s %s x%d — order_id=%s",
+                        "Order SUBMITTED: %s %s x%d — order_id=%s",
                         intent.side, intent.symbol, qty, order_id,
                     )
                     results.append(OrderResult(
@@ -601,7 +602,7 @@ class FutuBroker(BrokerBase):
                         commission=0.0,  # Moomoo simulate has no commission
                         timestamp=datetime.now(timezone.utc),
                         order_id=order_id,
-                        status="FILLED",
+                        status="SUBMITTED",
                     ))
                 else:
                     error_msg = str(data)

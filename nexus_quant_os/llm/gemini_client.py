@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -204,5 +205,8 @@ class GeminiClient:
         try:
             score = float(score)
         except (TypeError, ValueError):
+            return dict(_NEUTRAL_FALLBACK)
+        if math.isnan(score):
+            logger.warning("LLM 回傳 NaN 分數，使用中性值。")
             return dict(_NEUTRAL_FALLBACK)
         return {"sentiment_score": max(-1.0, min(1.0, score)), "reason": str(reason)}
