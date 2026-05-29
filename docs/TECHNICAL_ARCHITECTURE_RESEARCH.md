@@ -7,11 +7,11 @@
 
 ---
 
-## 1. Alpaca Paper Trading API — 最佳架構設計
+## 1. Moomoo / FutuOpenD Paper Trading API — 最佳架構設計
 
 ### 核心原則：狀態對帳模式 (State Reconciliation Pattern)
 
-> **Alpaca 是唯一的真實來源 (Single Source of Truth)**。  
+> **Moomoo / FutuOpenD 是唯一的真實來源 (Single Source of Truth)**。  
 > 絕不在本地維護虛擬持倉帳本。執行邏輯必須是「無狀態的自我修復」。
 
 ```
@@ -22,10 +22,10 @@
   │  輸出: 目標權重 {"SPY": 0.4, "SHY": 0.6, ...}     │
   └──────────────────────────────────────────────────┘
                      ↓
-  ┌─── 2. 同步層 (Alpaca API) ───────────────────────┐
-  │  GET /v2/account       → 真實總淨值 (Total Equity) │
-  │  GET /v2/positions     → 真實持倉 (Positions)       │
-  │  DELETE /v2/orders     → 清除昨日殘單               │
+  ┌─── 2. 同步層 (Moomoo API) ───────────────────────┐
+  │  TradeContext.accinfo_query() → 真實總淨值 (Equity) │
+  │  TradeContext.position_list_query() → 真實持倉   │
+  │  TradeContext.modify_order()  → 撤銷昨日殘單       │
   └──────────────────────────────────────────────────┘
                      ↓
   ┌─── 3. 對帳層 (Delta Calculation) ────────────────┐
@@ -45,38 +45,34 @@
 
 | 邊界情境 | 潛在災難 | 防禦機制 |
 |:--|:--|:--|
-| **網路斷線 / API 逾時** | 重複下單買爆倉位 (Double Spend) | **冪等性 (Idempotency)**：每筆訂單帶 `client_order_id` (如 `buy_SPY_20260526`)。搭配 `tenacity` 指數退避重試，Alpaca 自動阻擋重複 ID |
-| **部分成交 (Partial Fill)** | 持倉與預期不符，本地記帳大亂 | **放棄追單**：`TimeInForce='day'`。每日首步 `cancel_all_orders()` 清殘單，讀取實際持倉，未補齊的部位自動算進今天的 Delta |
-| **休市 / 提早收盤** | 假日報錯，錯過半天市 | **動態排程**：啟動首步呼叫 `alpaca.get_clock()`，`is_open=False` 直接退出，利用 `next_close` 動態調整 |
-| **股票分割 / 合併** | 股價突變，系統誤算部位 | **信任券商**：嚴格遵守狀態對帳模式，完全信任 `get_positions()`，券商後台已處理除權息 |
+| **FutuOpenD 未啟動** | 官方 SDK 無限重試，卡死系統 | **Fail-Fast TCP Precheck**：在實例化 `OpenQuoteContext` 前，先用 socket(127.0.0.1:11111) 探測，超時 1 秒即拋出異常中斷，釋放資源。 |
+| **部分成交 (Partial Fill)** | 持倉與預期不符，本地記帳大亂 | **放棄追單**：`cancel_all_pending()` 清殘單，讀取實際持倉，未補齊的部位自動算入今日 Delta，實作無狀態修復。 |
+| **休市 / 假日** | 報錯，白白浪費 API 額度 | **市場狀態過濾**：啟動首步檢查 `QuoteContext.get_market_state()`，若為 `CLOSED` 直接退出。 |
+| **微小價格跳動** | 頻繁發送極小碎股訂單，耗損手續費 | **雙重閾值防護**：執行層實作 `rebalance_threshold (2%)` 與 `min_order_value ($50)`，完美攔截碎股交易。 |
 
 ### 實作要點
 
 ```python
-# 冪等性下單範例
-from datetime import date
+# 1. 啟動前的 TCP 防呆檢測
+import socket
+def _verify_connection():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1.0)
+        s.connect(('127.0.0.1', 11111))  # Fail-Fast!
 
-def place_order(api, symbol, qty, side):
-    """帶冪等性的下單函數"""
-    order_id = f"{side}_{symbol}_{date.today().isoformat()}"
-    return api.submit_order(
-        symbol=symbol,
-        qty=abs(qty),
-        side=side,
-        type='market',
-        time_in_force='day',
-        client_order_id=order_id,  # 冪等性保證
-    )
-
-# 每日排程首步：清除殘單 + 讀取真實狀態
-def daily_reconcile(api):
-    api.cancel_all_orders()          # 清除昨日殘單
-    account = api.get_account()       # 真實淨值
-    positions = api.list_positions()  # 真實持倉
-    clock = api.get_clock()
-    if not clock.is_open:
-        return None  # 休市，直接退出
-    return account, positions
+# 2. 每日排程首步：清除殘單 + 讀取真實狀態
+def daily_reconcile(trade_ctx):
+    # 撤銷所有掛單
+    trade_ctx.unlock_trade('password')
+    orders = trade_ctx.order_list_query()
+    for o in orders:
+        if o['order_status'] in ['SUBMITTED', 'WAITING_SUBMIT']:
+            trade_ctx.modify_order(ModifyOrderOp.CANCEL, o['order_id'])
+    
+    # 讀取真實淨值與持倉
+    accinfo = trade_ctx.accinfo_query()
+    positions = trade_ctx.position_list_query()
+    return accinfo['total_assets'], positions
 ```
 
 ---
@@ -272,10 +268,10 @@ Step 3 — 金融推理 (Qwen 2.5 72B)
 
 ```
 Phase 1 (Week 1-2):
-  └─ Alpaca Paper Trading
+  └─ Moomoo Paper Trading (✅ 已完成)
      - 實作狀態對帳模式
-     - 冪等性下單 + Edge Case 防禦
-     - Docker cron 排程
+     - TCP Fail-Fast 防呆與 Edge Case 防禦
+     - Discord Webhook 排程推播
 
 Phase 2 (Week 3-5):
   └─ AI 理財顧問 Agent

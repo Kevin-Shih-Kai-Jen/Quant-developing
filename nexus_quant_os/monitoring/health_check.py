@@ -433,7 +433,9 @@ def check_weight_sanity(
     if w_sum > 1.05:
         problems.append(f"Weight sum = {w_sum:.4f} (>1.05, leverage detected)")
     elif w_sum < 0.01:
-        problems.append(f"Weight sum = {w_sum:.4f} (near zero — model producing no allocation)")
+        # Instead of 'near zero' (which triggered critical), we just add an info message 
+        # or handle it gracefully. 100% cash is allowed.
+        problems.append(f"100% Cash position (weight sum = {w_sum:.4f})")
 
     # Check 4: Over-concentration
     max_w = float(weights.max())
@@ -446,9 +448,13 @@ def check_weight_sanity(
         )
 
     if problems:
-        severity = Severity.CRITICAL if any(
-            "NaN" in p or "Inf" in p or "zero" in p for p in problems
-        ) else Severity.WARNING
+        # NaN, Inf, Leverage, or Negative weights are CRITICAL
+        is_critical = any(
+            "NaN" in p or "Inf" in p or "Negative" in p or "leverage" in p 
+            for p in problems
+        )
+        # Cash position or Over-concentration are WARNINGs (or OK if just cash, but let's keep it warning for visibility)
+        severity = Severity.CRITICAL if is_critical else Severity.WARNING
 
         return CheckResult(
             name="Weight Sanity",

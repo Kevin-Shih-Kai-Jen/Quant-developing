@@ -18,8 +18,8 @@ Nexus Quant OS 是一個專為對抗「前瞻偏誤 (Look-Ahead Bias)」與「�
    結合 **HMM (隱馬爾可夫模型)** 與 **OOD (異常偵測)**。當觸發紅燈時，防火牆會無視 AI 的買入建議，強制將曝險降至零（100% 現金）。
 4. **【NEW】個人化 AI 理財顧問 (Gemini AI Advisor)**
    內建支援長期記憶的 AI 顧問，不僅能隨時回答金融問題，還支援多模態視覺分析（可直接上傳券商對帳單截圖），並根據系統的量化訊號給出解讀。
-5. **【NEW】實盤與模擬自動下單 (Automated Execution)**
-   內建 Futu OpenD 接口，支援 Moomoo 模擬帳戶 (Paper Trading) 與實盤交易，全自動執行投組再平衡。
+5. **【NEW】實盤與模擬自動下單 (Automated Execution & Alerts)**
+   內建 Futu OpenD 接口，支援 Moomoo 模擬帳戶 (Paper Trading) 與實盤交易，全自動執行投組再平衡，並自動發送 Discord 交易報告。
 
 ---
 

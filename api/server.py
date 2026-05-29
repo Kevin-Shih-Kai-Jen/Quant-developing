@@ -35,6 +35,7 @@ import torch
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
 from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
 from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+from nexus_quant_os.monitoring.health_check import check_weight_sanity, Severity
 from nexus_quant_os.llm.sentiment_aggregator import SentimentAggregator
 from nexus_quant_os.llm.news_fetcher import NewsFetcher
 from nexus_quant_os.execution.broker_router import SimulatedBroker
@@ -438,6 +439,14 @@ async def run_pipeline():
             vix_value=vix_proxy,
             vix_5ma=vix_5ma,
         )
+
+        # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
+        weight_check = check_weight_sanity(
+            final_weights, asset_names=list(assets), max_single_weight=0.40,
+        )
+        if weight_check.severity == Severity.CRITICAL:
+            logger.error("Weight sanity CRITICAL: %s", weight_check.message)
+            raise HTTPException(status_code=500, detail=f"Model weight sanity FAILED: {weight_check.message}")
 
         # Formatting Output
         allocations = []

@@ -9,7 +9,7 @@
 
 | # | 功能 | 優先級 | 難度 | 成本 | 預估時程 |
 |:--|:--|:--|:--|:--|:--|
-| 1 | 模擬交易 API (Paper Trading) | 🔴 最高 | ⭐⭐⭐ | 免費 | 1-2 週 |
+| 1 | 模擬交易 API (Paper Trading) | 🟢 已完成 (Moomoo) | ⭐⭐⭐ | 免費 | 1-2 週 |
 | 2 | AI 個人理財顧問 Agent | 🟡 高 | ⭐⭐⭐⭐ | 免費~低 | 2-3 週 |
 | 3 | Alpha 獵手 Agent (供應鏈追蹤) | 🟠 高 | ⭐⭐⭐⭐⭐ | 中~高 | 4-8 週 |
 | 4 | 持續創新功能建議 | 🟢 持續 | — | — | 持續 |
@@ -17,16 +17,16 @@
 
 ---
 
-## Phase 5: 模擬交易 API
+## Phase 5: 模擬交易 API (✅ 已完成)
 
-**目標**: 連接 Alpaca Paper Trading API，每日自動下單，建立可公開展示的實時績效儀表板。
+**目標**: 連接真實的模擬交易 API，讓模型每天自動下單並將報告推播至 Discord。
 
-**技術方案**: Alpaca (免費) + Docker cron 排程 + caffeinate 防休眠
+**技術方案**: FutuOpenD (Moomoo API) + Discord Webhook 通知 + TCP Fail-fast 防護機制。
 
-**關鍵需求**:
-- Mac 關螢幕也能自動執行 (每日 9:25 AM EST)
-- 企業展示用：公開的 Read-only Dashboard
-- 從 Paper → Live 一鍵切換
+**成果與現況**:
+- 已完成 `FutuBroker` 實作，達成「大腦(模型)」與「手腳(執行)」完全分離的狀態對帳模式 (State Reconciliation)。
+- 建立 TCP 端口快速探測，避免 Moomoo 官方 SDK 無限重試導致排程卡死。
+- 自動抓取真實 FRED 與 yfinance 數據，推論後一鍵下單並自動發送 Discord 交易報告。
 
 ---
 
@@ -61,7 +61,7 @@
 ## 建議執行順序
 
 ```
-第 1-2 週:  功能 5 (Bug 監控) + 功能 1 (Paper Trading)
+第 1-2 週:  功能 5 (Bug 監控) + 功能 1 (✅ Paper Trading 已完成)
 第 3-5 週:  功能 2 (AI 理財顧問)
 第 6-10 週: 功能 3 (Alpha 獵手, 新專案)
 持續:       功能 4 (持續創新)

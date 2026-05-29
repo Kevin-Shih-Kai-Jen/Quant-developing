@@ -177,8 +177,14 @@ def _generate_synthetic_fallback(
     """合成數據備援（當真實數據無法取得時使用）。"""
     np.random.seed(seed)
 
-    sim_start = "2020-01-02"
-    sim_end   = "2024-12-31"
+    today = pd.Timestamp.today().normalize()
+    # 週末自動往前推到最後一個交易日
+    if today.dayofweek >= 5:
+        today = today - pd.tseries.offsets.BDay(1)
+        
+    sim_end   = today.strftime("%Y-%m-%d")
+    sim_start = (today - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+    
     trading_days = pd.bdate_range(sim_start, sim_end)
     n_days       = len(trading_days)
 

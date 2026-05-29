@@ -139,6 +139,17 @@ class FutuBroker(BrokerBase):
 
     def _verify_connection(self) -> None:
         """Verify that FutuOpenD is reachable."""
+        import socket
+        # Pre-check TCP connection to fail fast and avoid the internal moomoo-api infinite retry loop
+        try:
+            with socket.create_connection((self._host, self._port), timeout=1.0):
+                pass
+        except Exception as exc:
+            raise ConnectionError(
+                f"Cannot establish TCP connection to FutuOpenD at {self._host}:{self._port}. "
+                f"Is FutuOpenD running and listening?  Error: {exc}"
+            ) from exc
+
         ctx = None
         try:
             ctx = OpenQuoteContext(host=self._host, port=self._port)

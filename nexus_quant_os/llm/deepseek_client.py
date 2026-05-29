@@ -128,7 +128,7 @@ class DeepSeekClient:
 
     def _call_ollama_with_retry(self, prompt: str) -> str | None:
         """對 Ollama /api/generate 端點發送請求，含指數退避重試。"""
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_name,
             "prompt": prompt,
             "stream": False,

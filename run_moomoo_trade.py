@@ -89,7 +89,6 @@ from nexus_quant_os.risk_firewall.firewall_core import (
 )
 from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
-from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
 from nexus_quant_os.execution.futu_broker import FutuBroker
 
 
@@ -155,7 +154,7 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
 
     if not health.is_healthy:
         msg = format_health_report(health)
-        print(f"\n    🚨 CRITICAL health check failed — aborting pipeline")
+        print("\n    🚨 CRITICAL health check failed — aborting pipeline")
         report.error = f"Health check failed: {health.n_critical} critical issue(s)"
         # Notify via Discord (will be called from __main__)
         raise RuntimeError(
@@ -190,7 +189,6 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     from nexus_quant_os.models.moe_router import (
         GatingNoiseType, QuantMoERouter, RouterConfig, build_dummy_expert,
     )
-    from nexus_quant_os.training.train_moe import INPUT_DIM as MOE_INPUT_DIM
 
     device = torch.device("cpu")
     ckpt_path = find_latest_checkpoint()
@@ -214,7 +212,7 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
             print(f"    ✅ Checkpoint loaded: {ckpt_path.name}")
         except Exception as e:
             print(f"    ⚠️ Checkpoint mismatch: {type(e).__name__}")
-            print(f"    → Falling back to random router")
+            print("    → Falling back to random router")
 
     if not router_loaded:
         # Path B: Random router (same as main.py fallback)
@@ -247,20 +245,6 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     raw_weights = routing_result.combined_output[-1].cpu().numpy()
     print(f"    Assets: {list(assets_sorted)}")
     print(f"    Raw weights: {np.round(raw_weights, 4)}\n")
-
-    # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
-    weight_check = check_weight_sanity(
-        raw_weights, asset_names=list(assets_sorted), max_single_weight=0.40,
-    )
-    icon = "✅" if weight_check.severity == Severity.OK else (
-        "⚠️" if weight_check.severity == Severity.WARNING else "🚨"
-    )
-    print(f"    {icon} {weight_check.name}: {weight_check.message}")
-
-    if weight_check.severity == Severity.CRITICAL:
-        report.error = f"Weight sanity CRITICAL: {weight_check.message}"
-        raise RuntimeError(f"Model weight sanity FAILED: {weight_check.message}")
-    print()
 
     # ── STEP 6: Firewall Evaluation ───────────────────────────────
     print("  ▸ STEP 6: Risk firewall evaluation...")
@@ -330,6 +314,20 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
         config=SmootherConfig(alpha=0.30, min_rebalance_threshold=0.04),
     )
     final_weights = weight_smoother.smooth(optimized_weights)
+
+    # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
+    weight_check = check_weight_sanity(
+        final_weights, asset_names=list(assets_sorted), max_single_weight=0.40,
+    )
+    icon = "✅" if weight_check.severity == Severity.OK else (
+        "⚠️" if weight_check.severity == Severity.WARNING else "🚨"
+    )
+    print(f"    {icon} {weight_check.name}: {weight_check.message}")
+
+    if weight_check.severity == Severity.CRITICAL:
+        report.error = f"Weight sanity CRITICAL: {weight_check.message}"
+        raise RuntimeError(f"Model weight sanity FAILED: {weight_check.message}")
+    print()
 
     print(f"    Optimizer: {opt_mode}")
     print(f"\n    {'Asset':<8} {'Raw':>8} {'Final':>8}")
@@ -408,7 +406,7 @@ def execute_on_moomoo(
     report.pre_equity = account.equity
     report.pre_cash = account.cash
 
-    print(f"    ✅ Connected (SIMULATE)")
+    print("    ✅ Connected (SIMULATE)")
     print(f"    Equity    : ${account.equity:,.2f}")
     print(f"    Cash      : ${account.cash:,.2f}")
     print(f"    Positions : {len(positions)}\n")
@@ -464,7 +462,7 @@ def execute_on_moomoo(
     report.n_filled = len(filled)
     report.n_rejected = len(rejected)
 
-    print(f"\n  📋 Results:")
+    print("\n  📋 Results:")
     print(f"    {'Symbol':<8} {'Side':>4} {'Qty':>6} {'Price':>10} {'Status':>10}")
     print(f"    {'─'*8} {'─'*4} {'─'*6} {'─'*10} {'─'*10}")
     for r in results:
@@ -480,7 +478,7 @@ def execute_on_moomoo(
     report.post_equity = post_account.equity
     report.post_cash = post_account.cash
 
-    print(f"\n  📊 Post-Trade:")
+    print("\n  📊 Post-Trade:")
     print(f"    Equity: ${post_account.equity:,.2f} | "
           f"Cash: ${post_account.cash:,.2f} | "
           f"Positions: {len(post_positions)}")

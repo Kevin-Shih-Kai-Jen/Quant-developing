@@ -133,7 +133,24 @@ QuantMoERouter 是前饋 MoE 架構：
 
 ---
 
-## 5. 最終結論
+## 5. 執行層防呆與一致性審計 (Execution Hygiene)
+
+> **審計目的**: 驗證系統將目標權重發送至真實券商時，是否會產生回測中沒有考慮到的高頻交易/手續費消耗 (Turnover/Slippage erosion)。
+
+### ✅ 雙層防護機制與回測 100% 一致：
+1. **大腦決策層 (WeightSmoother)**: 
+   - 實盤 `run_moomoo_trade.py` 與回測 `backtest.py` 完全共用同一個 `SmootherConfig(alpha=0.30, min_rebalance_threshold=0.04)`。
+   - **確保：** 小於 4% 的權重變動會被直接濾除，與回測行為完全一致。
+2. **手腳執行層 (FutuBroker)**:
+   - 實作了 `rebalance_threshold = 0.02` (2%) 與 `min_order_value = 50.0`。
+   - **確保：** 即使因為股價微幅跳動導致計算出的差額 (Delta) 產生微小偏離，券商接口也會主動拒絕發送無意義的碎股訂單，徹底防堵手續費磨損。
+   - 實作了 `cancel_all_pending()` 機制，每次執行前自動清除前一日盤後/未成交的掛單，避免凍結資金產生負現金餘額。
+
+**結論**: 實盤排程的防過度交易機制嚴密，完美銜接了回測時的低換手率假設。
+
+---
+
+## 6. 最終結論
 
 ### ✅ 系統不存在以下問題：
 - ❌ 數據洩漏 (Data Leakage)

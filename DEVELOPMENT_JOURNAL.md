@@ -13,11 +13,11 @@
 ```
 v0.x (早期原型)        v1.0 (核心架構)        v2.0 (風控升級)         v2.2 (優化器重構)
      │                      │                      │                       │
-     ├─ Web Scraping        ├─ MoE Router          ├─ HMM Risk Firewall   ├─ CVXPY Migration
-     ├─ KDJ Indicator       ├─ PiT Alignment       ├─ OOD Anomaly Det.    ├─ VIX Momentum
-     ├─ Basic Strategy      ├─ Feature Engineer     ├─ Regime Allocator    ├─ Dynamic Allocation
-     └─ Mixed Strategy      ├─ Docker Pipeline      ├─ Weight Smoother     ├─ Data Integrity Audit
-                            └─ Backtest Engine      └─ Expert Specializ.   └─ Alpha Attribution
+     ├─ Web Scraping        ├─ MoE Router          ├─ HMM Risk Firewall   ├─ CVXPY Migration       ├─ Moomoo Execution
+     ├─ KDJ Indicator       ├─ PiT Alignment       ├─ OOD Anomaly Det.    ├─ VIX Momentum          ├─ Discord Alerts
+     ├─ Basic Strategy      ├─ Feature Engineer    ├─ Regime Allocator    ├─ Dynamic Allocation    ├─ Fail-Fast TCP Check
+     └─ Mixed Strategy      ├─ Docker Pipeline     ├─ Weight Smoother     ├─ Data Integrity Audit  └─ OS Architecture
+                            └─ Backtest Engine     └─ Expert Specializ.   └─ Alpha Attribution
 ```
 
 ---
@@ -238,8 +238,33 @@ VIX > 25 且 5MA 下降趨勢 → 判定為 V 型反轉
 |:--|:--|:--|
 | 資產選擇偏誤 | NVDA/AVGO 為事後選入的飆股 | ⚠️ 已記錄 |
 | 單一訓練視窗 | 無 Walk-Forward 自動重訓練 | 📋 未來功能 |
-| 無實時交易 | 僅回測，無 Paper/Live Trading 串接 | 📋 未來功能 |
+| 無實時交易 | 僅回測，無 Paper/Live Trading 串接 | ✅ 已解決 (v3.1 Moomoo) |
 | CPU-only 訓練 | Docker on Mac M1 限制 | ℹ️ 已知 |
+
+---
+
+## Phase 5: 自動化執行與監控 — 串接真實世界 (v3.1)
+
+### 🌍 核心突破
+系統正式跨出回測沙盒，連接真實金融世界。
+
+### 🏗️ 架構決策
+1. **執行層與決策層分離 (Separation of Concerns)**
+   - 決策層 (MoE Router) 僅負責輸出目標權重，對資產餘額一無所知。
+   - 執行層 (`FutuBroker`) 透過 Moomoo API 獲取真實帳戶狀態 (Total Equity, Positions)，進行對帳 (Reconciliation) 與差額計算，實現動態再平衡。
+
+2. **防卡死機制 (Fail-Fast TCP Check)**
+   - **痛點**：Moomoo 官方 SDK 在 FutuOpenD 未啟動時會陷入無限重試，導致自動排程卡死。
+   - **解法**：在啟動 SDK 前，先以 1 秒超時進行底層 TCP Socket 握手探測，若無法連線則乾淨俐落地拋出異常結束程式，節省系統資源。
+
+3. **雙層防護防頻繁交易**
+   - 繼承回測中 `WeightSmoother` 的 4% 變動門檻。
+   - 在執行層 (`FutuBroker`) 再加上 2% 容錯與 $50 最小訂單金額限制，完美避免微小震盪導致的手續費消耗。
+
+### 里程碑
+- **Moomoo Paper Trading**: 全自動模擬交易閉環完成。
+- **Discord Webhook**: 排程執行完畢自動發送交易報告至 Discord。
+- **Data Robustness**: 解決 FRED 密鑰缺失時的合成數據生成中斷 Bug。
 
 ---
 

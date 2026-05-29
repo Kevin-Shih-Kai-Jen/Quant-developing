@@ -119,7 +119,7 @@ class GemmaClient:
         """對 Gemma generateContent 端點發送請求，含指數退避重試。"""
         url = f"{_GEMMA_API_BASE}/{self.model}:generateContent"
         params = {"key": self.api_key}
-        payload = {
+        payload: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
