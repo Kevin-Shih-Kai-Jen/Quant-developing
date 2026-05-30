@@ -1688,21 +1688,22 @@
         const ctx = document.getElementById('allocationChart');
         if (!ctx) return;
 
-        const labels = positions.map(p => p.symbol);
-        const values = positions.map(p => Math.abs(p.market_value || 0));
+        const labels = positions.length > 0 ? positions.map(p => p.symbol) : ['無持倉'];
+        const values = positions.length > 0 ? positions.map(p => Math.abs(p.market_value || 0)) : [1];
         const colors = ['#00f0ff', '#a78bfa', '#00e676', '#ff3366', '#ffb800', '#38bdf8', '#f472b6'];
 
         if (allocationChart) {
-            allocationChart.data.labels = labels;
-            allocationChart.data.datasets[0].data = values;
-            allocationChart.data.datasets[0].backgroundColor = colors.slice(0, labels.length);
-            allocationChart.update();
-            return;
-        }
-
-        if (labels.length === 0) {
-            labels.push('無持倉');
-            values.push(1);
+            try {
+                allocationChart.data.labels = labels;
+                allocationChart.data.datasets[0].data = values;
+                allocationChart.data.datasets[0].backgroundColor = colors.slice(0, labels.length);
+                allocationChart.update();
+                return;
+            } catch (e) {
+                console.warn('Chart update failed, recreating:', e);
+                try { allocationChart.destroy(); } catch (_) {}
+                allocationChart = null;
+            }
         }
 
         allocationChart = new Chart(ctx, {
