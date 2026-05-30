@@ -2117,7 +2117,7 @@
             'NEUTRAL': 'neutral',
             'AVOID': 'avoid'
         };
-        return map[strength] || 'neutral';
+        return Object.prototype.hasOwnProperty.call(map, strength) ? map[strength] : 'neutral';
     }
 
     function alphaGetSignalLabel(strength) {
@@ -2131,7 +2131,7 @@
     }
 
     function alphaCheckIcon(pass) {
-        return pass
+        return (pass === true)
             ? '<span class="alpha-check pass">✅</span>'
             : '<span class="alpha-check fail">⬜</span>';
     }
@@ -2196,7 +2196,17 @@
         if (singleEl) { singleEl.style.display = 'block'; singleEl.innerHTML = '<div class="empty-state"><div class="spinner"></div><p style="margin-top:16px;">正在分析 ' + alphaEscapeHtml(ticker) + '...</p></div>'; }
 
         try {
-            const resp = await fetch('/api/alpha/scan/' + encodeURIComponent(ticker));
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            let resp;
+            try {
+                resp = await fetch('/api/alpha/scan/' + encodeURIComponent(ticker), { signal: controller.signal });
+            } catch (fetchErr) {
+                clearTimeout(timeoutId);
+                if (fetchErr.name === 'AbortError') throw new Error('請求超時（15 秒未回應），請稍後再試');
+                throw fetchErr;
+            }
+            clearTimeout(timeoutId);
             if (!resp.ok) {
                 const errData = await resp.json().catch(() => ({}));
                 throw new Error(errData.detail || 'HTTP ' + resp.status);
@@ -2247,7 +2257,17 @@
         const t0 = performance.now();
 
         try {
-            const resp = await fetch('/api/alpha/signals');
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            let resp;
+            try {
+                resp = await fetch('/api/alpha/signals', { signal: controller.signal });
+            } catch (fetchErr) {
+                clearTimeout(timeoutId);
+                if (fetchErr.name === 'AbortError') throw new Error('請求超時（15 秒未回應），請稍後再試');
+                throw fetchErr;
+            }
+            clearTimeout(timeoutId);
             if (!resp.ok) {
                 const errData = await resp.json().catch(() => ({}));
                 throw new Error(errData.detail || 'HTTP ' + resp.status);
@@ -2293,7 +2313,8 @@
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        const signals = data.signals || [];
+        const MAX_DISPLAY = 200;
+        const signals = (data.signals || []).filter(Boolean);
 
         if (signals.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted);">本次掃描未發現符合條件的標的</td></tr>';
@@ -2306,12 +2327,18 @@
             const oa = strengthOrder[a.signal_strength] ?? 9;
             const ob = strengthOrder[b.signal_strength] ?? 9;
             if (oa !== ob) return oa - ob;
-            return (b.composite_score ?? 0) - (a.composite_score ?? 0);
+            const sa = Number(a.composite_score); const sb = Number(b.composite_score);
+            return (isFinite(sb) ? sb : 0) - (isFinite(sa) ? sa : 0);
         });
 
-        for (const s of signals) {
+        const displaySignals = signals.slice(0, MAX_DISPLAY);
+        const fragment = document.createDocumentFragment();
+
+        for (const s of displaySignals) {
+            if (!s) continue;
             const tr = document.createElement('tr');
-            const score = s.composite_score ?? 0;
+            const rawScore = Number(s.composite_score);
+            const score = isFinite(rawScore) ? rawScore : 0;
             const scoreColor = alphaGetScoreColor(score);
             const scorePct = Math.max(0, Math.min(Math.round(score * 100), 100));
 
@@ -2331,7 +2358,14 @@
                 + '<td><span style="font-size:0.78rem;color:var(--text-secondary);">' + alphaEscapeHtml(s.valuation ?? 'N/A') + '</span></td>'
                 + '<td><button class="alpha-detail-btn" onclick="alphaDetailFromTable(\'' + alphaEscapeHtml(s.ticker ?? '') + '\')">詳情</button></td>';
 
-            tbody.appendChild(tr);
+            fragment.appendChild(tr);
+        }
+        tbody.appendChild(fragment);
+
+        if (signals.length > MAX_DISPLAY) {
+            const trNote = document.createElement('tr');
+            trNote.innerHTML = '<td colspan="9" style="text-align:center;padding:12px;color:var(--text-muted);font-size:0.8rem;">⚠️ 僅顯示前 ' + MAX_DISPLAY + ' 筆（共 ' + signals.length + ' 筆）</td>';
+            tbody.appendChild(trNote);
         }
     }
 
@@ -2341,7 +2375,8 @@
         if (!el) return;
         el.style.display = 'block';
 
-        const score = s.composite_score ?? 0;
+        const rawScore = Number(s.composite_score);
+        const score = isFinite(rawScore) ? rawScore : 0;
         const scoreColor = alphaGetScoreColor(score);
 
         let html = '<div class="glass-card animate-in no-hover">';
@@ -2383,8 +2418,8 @@
         }
 
         // Catalysts & Risks
-        const catalysts = s.catalysts || [];
-        const risks = s.risks || [];
+        const catalysts = Array.isArray(s.catalysts) ? s.catalysts : [];
+        const risks = Array.isArray(s.risks) ? s.risks : [];
         if (catalysts.length > 0 || risks.length > 0) {
             html += '<div style="margin-top:16px;">';
             if (catalysts.length > 0) {
