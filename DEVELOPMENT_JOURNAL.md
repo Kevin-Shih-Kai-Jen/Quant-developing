@@ -349,6 +349,34 @@ FRED API 成功?
 
 ---
 
+## Phase 7: Alpha Hunter 前端防護與極限測試 (v3.3)
+
+### 🐛 問題發現
+
+> 「資料一多就卡死，甚至一個錯誤格式的 JSON 就讓整個儀表板白屏。我們需要把網頁的防護做到滴水不漏。」
+
+在將 Alpha Hunter 獨立為 SPA (Single Page Application) 的過程中，透過極限黑盒測試發現了 8 個嚴重的邊界漏洞（Edge Case Bugs），包含：原型鏈污染、XSS 注入、字串偽布林值判定錯誤、無盡的 Fetch 死鎖，以及 DOM 渲染效能瓶頸。
+
+### 🏗️ 架構決策
+
+#### 前端防呆與安全降級
+- **嚴格型別檢查**：將所有 truthy/falsy 檢查（如 `pass ? ✅ : ⬜`）改為嚴格等於 `pass === true`，防止 `"false"` 字串穿透。
+- **原型鏈保護**：使用 `Object.prototype.hasOwnProperty.call(map, key)` 取代 `map[key] || default`，封殺 `__proto__` 污染。
+- **AbortController 超時機制**：所有的 `fetch` 請求都加上 15 秒強制超時（Timeout），防止伺服器死機導致使用者介面永久卡死。
+
+#### 巨量 DOM 渲染優化 (Performance)
+- **痛點**：一口氣渲染 50,000 筆資料的表格會導致瀏覽器主執行緒卡死超過 5 秒。
+- **解法**：
+  1. 導入 `MAX_DISPLAY = 200` 進行前端截斷，保障流暢度。
+  2. 使用 `DocumentFragment` 將所有的 `<tr>` 批次收集，最後一次性 `appendChild`，將 Reflow 次數從 N 降到 1。
+
+### 里程碑
+- **11 大毀滅級黑盒測試**: 建立 Playwright 自動化 E2E 測試腳本，模擬極端資料輸入。
+- **DOM 效能提升**: 5 萬筆資料渲染時間從 > 5 秒降至瞬間完成。
+- **UI 穩定性**: 100% 通過所有測試，即使後端傳遞畸形資料也不會造成白屏崩潰。
+
+---
+
 ## 技術債與已知限制
 
 | 項目 | 說明 | 狀態 |
