@@ -829,6 +829,386 @@
             .glass-card { padding: 16px; }
             .chat-bubble { max-width: 90%; }
         }
+
+        /* ===== Alpha Hunter Page ===== */
+
+        /* -- Search Bar -- */
+        .alpha-search-bar {
+            padding: 24px 0 16px;
+            display: flex;
+            justify-content: center;
+        }
+        .alpha-search-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            width: 100%;
+            max-width: 640px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-pill);
+            padding: 4px 4px 4px 16px;
+            transition: border-color var(--transition-fast);
+        }
+        .alpha-search-wrapper:focus-within {
+            border-color: var(--cyan);
+            box-shadow: 0 0 16px rgba(0,240,255,0.1);
+        }
+        .alpha-search-icon {
+            font-size: 1rem;
+            margin-right: 8px;
+            filter: grayscale(0.5);
+        }
+        .alpha-search-input {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9rem;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+        .alpha-search-input::placeholder {
+            color: var(--text-muted);
+            text-transform: none;
+            font-weight: 400;
+        }
+        .alpha-scan-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, rgba(0,240,255,0.15), rgba(0,240,255,0.05));
+            border: 1px solid rgba(0,240,255,0.25);
+            border-radius: var(--radius-pill);
+            color: var(--cyan);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+        }
+        .alpha-scan-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, rgba(0,240,255,0.25), rgba(0,240,255,0.1));
+            box-shadow: 0 0 20px rgba(0,240,255,0.15);
+        }
+        .alpha-scan-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* -- Actions -- */
+        .alpha-actions {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            padding: 0 0 20px;
+        }
+        .alpha-action-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-pill);
+            color: var(--text-secondary);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+        .alpha-action-btn:hover:not(:disabled) {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.05);
+        }
+        .alpha-action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* -- Progress Bar -- */
+        .alpha-progress-bar {
+            max-width: 640px;
+            margin: 0 auto 24px;
+            text-align: center;
+        }
+        .alpha-progress-text {
+            color: var(--text-secondary);
+            font-size: 0.82rem;
+            margin-bottom: 8px;
+        }
+        .alpha-progress-track {
+            width: 100%;
+            height: 4px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .alpha-progress-fill {
+            height: 100%;
+            width: 30%;
+            background: linear-gradient(90deg, var(--cyan), rgba(0,240,255,0.4));
+            border-radius: 2px;
+            animation: alphaProgressPulse 2s ease-in-out infinite;
+        }
+        @keyframes alphaProgressPulse {
+            0% { width: 15%; opacity: 0.7; }
+            50% { width: 70%; opacity: 1; }
+            100% { width: 15%; opacity: 0.7; }
+        }
+
+        /* -- Summary Row -- */
+        .alpha-summary-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 768px) {
+            .alpha-summary-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        .alpha-summary-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            text-align: center;
+        }
+        .alpha-summary-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .alpha-summary-value {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+        .alpha-summary-strong .alpha-summary-value { color: var(--green); }
+        .alpha-summary-buy .alpha-summary-value { color: var(--cyan); }
+
+        /* -- Signal Table -- */
+        .alpha-table-card {
+            overflow: hidden;
+        }
+        .alpha-table-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .alpha-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .alpha-table thead th {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            padding: 12px 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-card);
+            white-space: nowrap;
+        }
+        .alpha-table tbody td {
+            padding: 14px 10px;
+            font-size: 0.85rem;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            vertical-align: middle;
+        }
+        .alpha-table tbody tr {
+            transition: background var(--transition-fast);
+        }
+        .alpha-table tbody tr:hover {
+            background: rgba(255,255,255,0.02);
+        }
+        .alpha-table .alpha-ticker {
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: 0.02em;
+        }
+        .alpha-table .alpha-company {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            display: block;
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* -- Signal Badge -- */
+        .alpha-signal-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+        .alpha-signal-badge.strong-buy { background: var(--green-dim); color: var(--green); }
+        .alpha-signal-badge.buy { background: var(--cyan-dim); color: var(--cyan); }
+        .alpha-signal-badge.neutral { background: var(--yellow-dim); color: var(--yellow); }
+        .alpha-signal-badge.avoid { background: var(--red-dim); color: var(--red); }
+
+        /* -- Check Icon -- */
+        .alpha-check { font-size: 0.9rem; }
+        .alpha-check.pass { color: var(--green); }
+        .alpha-check.fail { color: var(--text-muted); }
+
+        /* -- Score Bar -- */
+        .alpha-score-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .alpha-score-track {
+            width: 60px;
+            height: 6px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .alpha-score-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+        }
+        .alpha-score-value {
+            font-size: 0.8rem;
+            font-weight: 600;
+            min-width: 36px;
+        }
+
+        /* -- Detail Button -- */
+        .alpha-detail-btn {
+            padding: 4px 12px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            font-family: 'Inter', sans-serif;
+        }
+        .alpha-detail-btn:hover {
+            border-color: var(--cyan);
+            color: var(--cyan);
+        }
+
+        /* -- Single Result Card -- */
+        .alpha-single-result {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .alpha-result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .alpha-result-ticker {
+            font-size: 2rem;
+            font-weight: 900;
+            letter-spacing: -0.02em;
+        }
+        .alpha-result-company {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        .alpha-result-score-big {
+            font-size: 2.5rem;
+            font-weight: 900;
+        }
+        .alpha-checklist {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin: 20px 0;
+        }
+        @media (max-width: 640px) {
+            .alpha-checklist { grid-template-columns: 1fr; }
+        }
+        .alpha-checklist-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+        }
+        .alpha-checklist-item.pass {
+            border-color: rgba(0,230,118,0.2);
+        }
+        .alpha-ai-section {
+            margin-top: 20px;
+        }
+        .alpha-ai-summary {
+            padding: 16px;
+            background: rgba(255,255,255,0.02);
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--cyan);
+            font-size: 0.85rem;
+            line-height: 1.7;
+            color: var(--text-secondary);
+        }
+        .alpha-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 12px;
+        }
+        .alpha-tag {
+            padding: 4px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 0.72rem;
+            font-weight: 600;
+        }
+        .alpha-tag.catalyst { background: var(--green-dim); color: var(--green); }
+        .alpha-tag.risk { background: var(--red-dim); color: var(--red); }
+
+        /* -- Empty State -- */
+        .alpha-empty-state {
+            text-align: center;
+            padding: 80px 24px;
+            color: var(--text-muted);
+        }
+        .alpha-empty-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            filter: drop-shadow(0 0 24px rgba(0,240,255,0.2));
+        }
+        .alpha-empty-state h3 {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        .alpha-empty-state p {
+            font-size: 0.9rem;
+            max-width: 400px;
+            margin: 0 auto;
+            line-height: 1.6;
+        }
+        .alpha-empty-hint {
+            margin-top: 12px !important;
+            font-size: 0.78rem !important;
+            color: var(--text-muted) !important;
+        }
     </style>
 </head>
 <body>
@@ -843,6 +1223,7 @@
             <button class="nav-tab active" data-page="dashboard" onclick="showPage('dashboard')">📊 總覽</button>
             <button class="nav-tab" data-page="advisor" onclick="showPage('advisor')">🤖 AI 顧問</button>
             <button class="nav-tab" data-page="monitor" onclick="showPage('monitor')">🔧 系統監控</button>
+            <button class="nav-tab" data-page="alpha" onclick="showPage('alpha')">🎯 Alpha 獵手</button>
         </div>
         <div class="nav-status">
             <div class="status-dot" id="connectionDot"></div>
@@ -995,6 +1376,105 @@
                 </div>
             </div>
         </section>
+
+        <!-- ===== Alpha Hunter Page ===== -->
+        <section class="page" id="page-alpha">
+            <!-- 3.2.1 頂部搜索列 -->
+            <div class="alpha-search-bar">
+                <div class="alpha-search-wrapper">
+                    <span class="alpha-search-icon">🔍</span>
+                    <input type="text" 
+                           id="alphaTickerInput" 
+                           class="alpha-search-input" 
+                           placeholder="輸入股票代號（例：NVDA, AAPL, TSLA）" 
+                           maxlength="10"
+                           autocomplete="off"
+                           spellcheck="false">
+                    <button class="alpha-scan-btn" id="alphaScanBtn" onclick="alphaScanSingle()">
+                        <span id="alphaScanBtnText">⚡ 深度掃描</span>
+                        <span id="alphaScanBtnSpinner" class="spinner" style="display:none;"></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 3.2.2 快速操作按鈕 -->
+            <div class="alpha-actions">
+                <button class="alpha-action-btn" id="alphaFullScanBtn" onclick="alphaFullScan()">
+                    <span id="alphaFullScanIcon">🌐</span>
+                    <span id="alphaFullScanText">全市場掃描</span>
+                </button>
+            </div>
+
+            <!-- 3.2.3 錯誤訊息區 -->
+            <div id="alphaError" style="display:none;"></div>
+
+            <!-- 3.2.4 掃描進度指示器 -->
+            <div id="alphaProgress" style="display:none;" class="alpha-progress-bar">
+                <div class="alpha-progress-text" id="alphaProgressText">正在掃描 51 檔股票...</div>
+                <div class="alpha-progress-track">
+                    <div class="alpha-progress-fill" id="alphaProgressFill"></div>
+                </div>
+            </div>
+
+            <!-- 3.2.5 單一股票深度分析結果（預設隱藏） -->
+            <div id="alphaSingleResult" style="display:none;" class="alpha-single-result">
+                <!-- 由 JS 動態填充 -->
+            </div>
+
+            <!-- 3.2.6 全市場掃描結果（預設隱藏） -->
+            <div id="alphaSignalsGrid" style="display:none;">
+                <!-- 3.2.6a 摘要卡片列 -->
+                <div class="alpha-summary-row" id="alphaSummaryRow">
+                    <div class="alpha-summary-card alpha-summary-total">
+                        <div class="alpha-summary-label">候選標的</div>
+                        <div class="alpha-summary-value" id="alphaTotalCount">0</div>
+                    </div>
+                    <div class="alpha-summary-card alpha-summary-strong">
+                        <div class="alpha-summary-label">STRONG BUY</div>
+                        <div class="alpha-summary-value" id="alphaStrongCount">0</div>
+                    </div>
+                    <div class="alpha-summary-card alpha-summary-buy">
+                        <div class="alpha-summary-label">BUY</div>
+                        <div class="alpha-summary-value" id="alphaBuyCount">0</div>
+                    </div>
+                    <div class="alpha-summary-card alpha-summary-time">
+                        <div class="alpha-summary-label">掃描時間</div>
+                        <div class="alpha-summary-value" id="alphaScanTime">—</div>
+                    </div>
+                </div>
+
+                <!-- 3.2.6b 信號表格 -->
+                <div class="glass-card animate-in no-hover alpha-table-card">
+                    <div class="card-title"><span class="title-icon">📊</span> 掃描結果</div>
+                    <div class="alpha-table-wrapper">
+                        <table class="alpha-table" id="alphaSignalsTable">
+                            <thead>
+                                <tr>
+                                    <th>股票</th>
+                                    <th>信號</th>
+                                    <th>評分</th>
+                                    <th>基本面</th>
+                                    <th>技術面</th>
+                                    <th>AI</th>
+                                    <th>供應鏈</th>
+                                    <th>估值</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="alphaSignalsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3.2.7 空白狀態（初始載入時顯示） -->
+            <div id="alphaEmpty" class="alpha-empty-state">
+                <div class="alpha-empty-icon">🎯</div>
+                <h3>Alpha 獵手</h3>
+                <p>輸入股票代號進行深度分析，或點擊「全市場掃描」搜尋潛力股。</p>
+                <p class="alpha-empty-hint">支援美股代號：NVDA, AAPL, MSFT, AMZN, META...</p>
+            </div>
+        </section>
     </main>
 
     <script>
@@ -1005,10 +1485,10 @@
     // ===== State =====
     let currentPage = 'dashboard';
     let dashboardInterval = null;
-    let allocationChart = null;
     let chatHistory = [];
     let selectedFile = null;
     let isConnected = true;
+    let alphaIsScanning = false;
 
     // ===== Utilities =====
     function formatCurrency(val) {
@@ -1086,6 +1566,11 @@
                 const input = document.getElementById('chatInput');
                 if (input) input.focus();
             }, 100);
+        }
+
+        if (page === 'alpha') {
+            const input = document.getElementById('alphaTickerInput');
+            if (input) setTimeout(() => input.focus(), 100);
         }
     }
 
@@ -1598,7 +2083,346 @@
     // ===== Initialization =====
     document.addEventListener('DOMContentLoaded', () => {
         showPage('dashboard');
+
+        // ===== Alpha Hunter Logic =====
+        const alphaInput = document.getElementById('alphaTickerInput');
+        if (alphaInput) {
+            alphaInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    alphaScanSingle();
+                }
+            });
+        }
     });
+
+    // Helpers
+    function alphaFormatScore(score) {
+        if (score == null || isNaN(score)) return '—';
+        return (score * 100).toFixed(0);
+    }
+
+    function alphaGetScoreColor(score) {
+        if (score == null || isNaN(score)) return 'var(--text-muted)';
+        if (score >= 0.7) return 'var(--green)';
+        if (score >= 0.4) return 'var(--cyan)';
+        if (score >= 0.2) return 'var(--yellow)';
+        return 'var(--red)';
+    }
+
+    function alphaGetSignalBadgeClass(strength) {
+        const map = {
+            'STRONG_BUY': 'strong-buy',
+            'BUY': 'buy',
+            'NEUTRAL': 'neutral',
+            'AVOID': 'avoid'
+        };
+        return map[strength] || 'neutral';
+    }
+
+    function alphaGetSignalLabel(strength) {
+        const map = {
+            'STRONG_BUY': '強力買進',
+            'BUY': '買進',
+            'NEUTRAL': '中性',
+            'AVOID': '避開'
+        };
+        return map[strength] || strength;
+    }
+
+    function alphaCheckIcon(pass) {
+        return pass
+            ? '<span class="alpha-check pass">✅</span>'
+            : '<span class="alpha-check fail">⬜</span>';
+    }
+
+    function alphaShowError(msg) {
+        const el = document.getElementById('alphaError');
+        if (!el) return;
+        el.style.display = 'block';
+        el.innerHTML = '<div class="error-banner animate-in">🚨 ' + msg + '</div>';
+    }
+
+    function alphaHideError() {
+        const el = document.getElementById('alphaError');
+        if (el) el.style.display = 'none';
+    }
+
+    function alphaEscapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Single Scan
+    async function alphaScanSingle() {
+        const input = document.getElementById('alphaTickerInput');
+        if (!input) return;
+
+        const ticker = input.value.trim().toUpperCase();
+
+        // 驗證 1: 空值
+        if (!ticker) {
+            alphaShowError('請輸入股票代號');
+            return;
+        }
+
+        // 驗證 2: 格式（1-10 個英文字母 + 可選的句號，如 BRK.B）
+        if (!/^[A-Z]{1,5}(\.[A-Z]{1,2})?$/.test(ticker)) {
+            alphaShowError('無效的股票代號格式。範例：NVDA, AAPL, BRK.B');
+            return;
+        }
+
+        // 驗證 3: 防止重複點擊
+        if (alphaIsScanning) return;
+        alphaIsScanning = true;
+
+        // UI: 按鈕狀態
+        const btn = document.getElementById('alphaScanBtn');
+        const btnText = document.getElementById('alphaScanBtnText');
+        const btnSpinner = document.getElementById('alphaScanBtnSpinner');
+        if (btn) btn.disabled = true;
+        if (btnText) btnText.style.display = 'none';
+        if (btnSpinner) btnSpinner.style.display = 'inline-block';
+
+        // UI: 隱藏其他區域
+        alphaHideError();
+        const emptyEl = document.getElementById('alphaEmpty');
+        if (emptyEl) emptyEl.style.display = 'none';
+        const gridEl = document.getElementById('alphaSignalsGrid');
+        if (gridEl) gridEl.style.display = 'none';
+        const singleEl = document.getElementById('alphaSingleResult');
+        if (singleEl) { singleEl.style.display = 'block'; singleEl.innerHTML = '<div class="empty-state"><div class="spinner"></div><p style="margin-top:16px;">正在分析 ' + alphaEscapeHtml(ticker) + '...</p></div>'; }
+
+        try {
+            const resp = await fetch('/api/alpha/scan/' + encodeURIComponent(ticker));
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.detail || 'HTTP ' + resp.status);
+            }
+            const data = await resp.json();
+
+            if (!data || !data.signal) {
+                throw new Error('無效的回傳資料');
+            }
+
+            alphaRenderSingleResult(data.signal);
+        } catch (err) {
+            console.error('Alpha scan error:', err);
+            if (singleEl) singleEl.style.display = 'none';
+            alphaShowError('掃描 ' + alphaEscapeHtml(ticker) + ' 失敗：' + alphaEscapeHtml(err.message));
+        } finally {
+            alphaIsScanning = false;
+            if (btn) btn.disabled = false;
+            if (btnText) btnText.style.display = 'inline';
+            if (btnSpinner) btnSpinner.style.display = 'none';
+        }
+    }
+
+    // Full Scan
+    async function alphaFullScan() {
+        if (alphaIsScanning) return;
+        alphaIsScanning = true;
+
+        const btn = document.getElementById('alphaFullScanBtn');
+        if (btn) btn.disabled = true;
+
+        const fullScanText = document.getElementById('alphaFullScanText');
+        const fullScanIcon = document.getElementById('alphaFullScanIcon');
+        if (fullScanText) fullScanText.textContent = '掃描中...';
+        if (fullScanIcon) fullScanIcon.textContent = '⏳';
+
+        alphaHideError();
+        const emptyEl = document.getElementById('alphaEmpty');
+        if (emptyEl) emptyEl.style.display = 'none';
+        const singleEl = document.getElementById('alphaSingleResult');
+        if (singleEl) singleEl.style.display = 'none';
+        const gridEl = document.getElementById('alphaSignalsGrid');
+        if (gridEl) gridEl.style.display = 'none';
+
+        const progressEl = document.getElementById('alphaProgress');
+        if (progressEl) progressEl.style.display = 'block';
+
+        const t0 = performance.now();
+
+        try {
+            const resp = await fetch('/api/alpha/signals');
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.detail || 'HTTP ' + resp.status);
+            }
+            const data = await resp.json();
+
+            if (!data || !Array.isArray(data.signals)) {
+                throw new Error('無效的回傳資料');
+            }
+
+            const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+            alphaRenderSignalsGrid(data, elapsed);
+        } catch (err) {
+            console.error('Alpha full scan error:', err);
+            alphaShowError('全市場掃描失敗：' + alphaEscapeHtml(err.message));
+        } finally {
+            alphaIsScanning = false;
+            if (btn) btn.disabled = false;
+            if (fullScanText) fullScanText.textContent = '全市場掃描';
+            if (fullScanIcon) fullScanIcon.textContent = '🌐';
+            if (progressEl) progressEl.style.display = 'none';
+        }
+    }
+
+    // Render Grid
+    function alphaRenderSignalsGrid(data, elapsed) {
+        const gridEl = document.getElementById('alphaSignalsGrid');
+        if (!gridEl) return;
+        gridEl.style.display = 'block';
+
+        // 摘要卡片
+        const totalEl = document.getElementById('alphaTotalCount');
+        const strongEl = document.getElementById('alphaStrongCount');
+        const buyEl = document.getElementById('alphaBuyCount');
+        const timeEl = document.getElementById('alphaScanTime');
+        if (totalEl) totalEl.textContent = data.total ?? 0;
+        if (strongEl) strongEl.textContent = data.strong_buy_count ?? 0;
+        if (buyEl) buyEl.textContent = data.buy_count ?? 0;
+        if (timeEl) timeEl.textContent = elapsed + 's';
+
+        // 表格
+        const tbody = document.getElementById('alphaSignalsBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const signals = data.signals || [];
+
+        if (signals.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted);">本次掃描未發現符合條件的標的</td></tr>';
+            return;
+        }
+
+        // 排序：STRONG_BUY > BUY > NEUTRAL，同級別按 score 排序
+        const strengthOrder = { 'STRONG_BUY': 0, 'BUY': 1, 'NEUTRAL': 2, 'AVOID': 3 };
+        signals.sort((a, b) => {
+            const oa = strengthOrder[a.signal_strength] ?? 9;
+            const ob = strengthOrder[b.signal_strength] ?? 9;
+            if (oa !== ob) return oa - ob;
+            return (b.composite_score ?? 0) - (a.composite_score ?? 0);
+        });
+
+        for (const s of signals) {
+            const tr = document.createElement('tr');
+            const score = s.composite_score ?? 0;
+            const scoreColor = alphaGetScoreColor(score);
+            const scorePct = Math.max(0, Math.min(Math.round(score * 100), 100));
+
+            tr.innerHTML = ''
+                + '<td><span class="alpha-ticker">' + alphaEscapeHtml(s.ticker ?? '—') + '</span>'
+                + '<span class="alpha-company">' + alphaEscapeHtml(s.company_name ?? '') + '</span></td>'
+                + '<td><span class="alpha-signal-badge ' + alphaGetSignalBadgeClass(s.signal_strength) + '">'
+                + alphaGetSignalLabel(s.signal_strength) + '</span></td>'
+                + '<td><div class="alpha-score-bar">'
+                + '<div class="alpha-score-track"><div class="alpha-score-fill" style="width:' + scorePct + '%;background:' + scoreColor + ';"></div></div>'
+                + '<span class="alpha-score-value" style="color:' + scoreColor + ';">' + alphaFormatScore(score) + '</span>'
+                + '</div></td>'
+                + '<td>' + alphaCheckIcon(s.fundamental_pass) + '</td>'
+                + '<td>' + alphaCheckIcon(s.technical_confirm) + '</td>'
+                + '<td>' + alphaCheckIcon(s.ai_bullish) + '</td>'
+                + '<td>' + alphaCheckIcon(s.supply_chain_healthy) + '</td>'
+                + '<td><span style="font-size:0.78rem;color:var(--text-secondary);">' + alphaEscapeHtml(s.valuation ?? 'N/A') + '</span></td>'
+                + '<td><button class="alpha-detail-btn" onclick="alphaDetailFromTable(\'' + alphaEscapeHtml(s.ticker ?? '') + '\')">詳情</button></td>';
+
+            tbody.appendChild(tr);
+        }
+    }
+
+    // Render Single Result
+    function alphaRenderSingleResult(s) {
+        const el = document.getElementById('alphaSingleResult');
+        if (!el) return;
+        el.style.display = 'block';
+
+        const score = s.composite_score ?? 0;
+        const scoreColor = alphaGetScoreColor(score);
+
+        let html = '<div class="glass-card animate-in no-hover">';
+
+        // Header
+        html += '<div class="alpha-result-header">';
+        html += '<div><div class="alpha-result-ticker">' + alphaEscapeHtml(s.ticker ?? '') + '</div>';
+        html += '<div class="alpha-result-company">' + alphaEscapeHtml(s.company_name ?? '') + '</div></div>';
+        html += '<div style="text-align:right;">';
+        html += '<div class="alpha-result-score-big" style="color:' + scoreColor + ';">' + alphaFormatScore(score) + '</div>';
+        html += '<div><span class="alpha-signal-badge ' + alphaGetSignalBadgeClass(s.signal_strength) + '">'
+             + alphaGetSignalLabel(s.signal_strength) + '</span></div>';
+        html += '</div></div>';
+
+        // Checklist
+        html += '<div class="alpha-checklist">';
+        const checks = [
+            { label: '基本面篩選', pass: s.fundamental_pass, desc: '營收成長、毛利率、現金流、負債' },
+            { label: '技術面確認', pass: s.technical_confirm, desc: '股價在 200 日均線之上' },
+            { label: 'AI 深度分析', pass: s.ai_bullish, desc: 'LLM 分析管理層語氣與催化劑' },
+            { label: '供應鏈健康', pass: s.supply_chain_healthy, desc: '上下游關係穩定無重大風險' },
+        ];
+        for (const c of checks) {
+            html += '<div class="alpha-checklist-item' + (c.pass ? ' pass' : '') + '">';
+            html += alphaCheckIcon(c.pass);
+            html += '<div><div style="font-weight:600;">' + alphaEscapeHtml(c.label) + '</div>';
+            html += '<div style="font-size:0.75rem;color:var(--text-muted);">' + alphaEscapeHtml(c.desc) + '</div></div>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // AI Summary
+        const summary = s.ai_summary || '';
+        if (summary) {
+            html += '<div class="alpha-ai-section">';
+            html += '<div class="card-title"><span class="title-icon">🧠</span> AI 分析摘要</div>';
+            html += '<div class="alpha-ai-summary">' + alphaEscapeHtml(summary) + '</div>';
+            html += '</div>';
+        }
+
+        // Catalysts & Risks
+        const catalysts = s.catalysts || [];
+        const risks = s.risks || [];
+        if (catalysts.length > 0 || risks.length > 0) {
+            html += '<div style="margin-top:16px;">';
+            if (catalysts.length > 0) {
+                html += '<div class="card-title" style="font-size:0.78rem;margin-bottom:8px;"><span class="title-icon">🚀</span> 成長催化劑</div>';
+                html += '<div class="alpha-tags">';
+                for (const c of catalysts) {
+                    html += '<span class="alpha-tag catalyst">' + alphaEscapeHtml(c) + '</span>';
+                }
+                html += '</div>';
+            }
+            if (risks.length > 0) {
+                html += '<div class="card-title" style="font-size:0.78rem;margin:12px 0 8px;"><span class="title-icon">⚠️</span> 潛在風險</div>';
+                html += '<div class="alpha-tags">';
+                for (const r of risks) {
+                    html += '<span class="alpha-tag risk">' + alphaEscapeHtml(r) + '</span>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        // Valuation
+        html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-card);display:flex;justify-content:space-between;font-size:0.82rem;">';
+        html += '<span style="color:var(--text-muted);">估值等級</span>';
+        html += '<span style="font-weight:600;">' + alphaEscapeHtml(s.valuation ?? 'N/A') + '</span>';
+        html += '</div>';
+
+        html += '</div>';  // close glass-card
+
+        el.innerHTML = html;
+    }
+
+    function alphaDetailFromTable(ticker) {
+        if (!ticker) return;
+        const input = document.getElementById('alphaTickerInput');
+        if (input) input.value = ticker;
+        alphaScanSingle();
+    }
     </script>
 </body>
 </html>
