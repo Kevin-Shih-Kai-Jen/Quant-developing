@@ -12,7 +12,7 @@ import os
 import math
 import time
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import requests
@@ -21,6 +21,7 @@ from .models import AIAnalysis
 from ._constants import (
     LLM_MAX_INPUT_CHARS, LLM_TEMPERATURE, LLM_TIMEOUT,
     LLM_MAX_RETRIES, AI_BULLISH_THRESHOLD,
+    AI_CACHE_DIR, AI_ANALYSIS_TTL_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ Output ONLY valid JSON. No markdown, no explanation.
         self._rate_lock = threading.Lock()
         self._last_request_time: float = 0.0
         self._session = requests.Session()
+        self._cache_dir = AI_CACHE_DIR
+        self._cache_ttl = timedelta(days=AI_ANALYSIS_TTL_DAYS)
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         if not self._api_key:
             logger.warning("AIAnalyst: No API key provided. Analysis will return neutral.")
@@ -86,6 +90,38 @@ Output ONLY valid JSON. No markdown, no explanation.
         ticker = ticker.upper()
         default_analysis = AIAnalysis(ticker=ticker)
         
+        # ── 快取檢查 ──
+        cache_file = self._cache_dir / f"{ticker}.json"
+        if cache_file.exists():
+            try:
+                mtime = datetime.fromtimestamp(
+                    cache_file.stat().st_mtime, tz=timezone.utc
+                )
+                age = datetime.now(timezone.utc) - mtime
+                if timedelta(0) <= age < self._cache_ttl:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cached = json.load(f)
+                    return AIAnalysis(
+                        ticker=ticker,
+                        management_tone=cached.get("management_tone", 0.0),
+                        ai_score=cached.get("ai_score", 0.0),
+                        confidence=cached.get("confidence", 0.0),
+                        summary=str(cached.get("summary", "")),
+                        key_risks=cached.get("key_risks", []),
+                        growth_catalysts=cached.get("growth_catalysts", []),
+                        has_new_product=cached.get("has_new_product", False),
+                        has_ma_activity=cached.get("has_ma_activity", False),
+                        has_market_expansion=cached.get("has_market_expansion", False),
+                        has_cost_restructuring=cached.get("has_cost_restructuring", False),
+                        has_regulatory_risk=cached.get("has_regulatory_risk", False),
+                    )
+            except Exception as e:
+                logger.warning("AI cache read failed for %s: %s", ticker, e)
+                try:
+                    cache_file.unlink()
+                except Exception:
+                    pass
+
         if not self._api_key:
             return default_analysis
             
@@ -133,10 +169,17 @@ Output ONLY valid JSON. No markdown, no explanation.
                 
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
                 text = text.strip()
-                if text.startswith("```json"): text = text[7:]
-                if text.startswith("```"): text = text[3:]
-                if text.endswith("```"): text = text[:-3]
-                text = text.strip()
+                # 防呆：用 Regex 從 ```json...``` 或 ```...``` 中提取 JSON
+                import re as _re
+                md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
+                if md_match:
+                    text = md_match.group(1).strip()
+                else:
+                    # 沒有 Markdown 包裹，嘗試找第一個 { 到最後一個 }
+                    brace_start = text.find('{')
+                    brace_end = text.rfind('}')
+                    if brace_start != -1 and brace_end > brace_start:
+                        text = text[brace_start:brace_end + 1]
                 result_json = json.loads(text)
                 break
             except requests.RequestException as e:
@@ -171,7 +214,7 @@ Output ONLY valid JSON. No markdown, no explanation.
                 return []
             return [str(item)[:max_chars] for item in val[:max_items]]
 
-        return AIAnalysis(
+        analysis = AIAnalysis(
             ticker=ticker,
             management_tone=safe_float(result_json.get("management_tone"), -1.0, 1.0, 0.0),
             ai_score=safe_float(result_json.get("ai_score"), -1.0, 1.0, 0.0),
@@ -185,3 +228,35 @@ Output ONLY valid JSON. No markdown, no explanation.
             has_cost_restructuring=safe_bool(result_json.get("has_cost_restructuring")),
             has_regulatory_risk=safe_bool(result_json.get("has_regulatory_risk"))
         )
+
+        # ── 成功後寫入快取 ──
+        try:
+            cache_data = {
+                "ticker": ticker,
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "management_tone": analysis.management_tone,
+                "ai_score": analysis.ai_score,
+                "confidence": analysis.confidence,
+                "summary": analysis.summary,
+                "key_risks": analysis.key_risks,
+                "growth_catalysts": analysis.growth_catalysts,
+                "has_new_product": analysis.has_new_product,
+                "has_ma_activity": analysis.has_ma_activity,
+                "has_market_expansion": analysis.has_market_expansion,
+                "has_cost_restructuring": analysis.has_cost_restructuring,
+                "has_regulatory_risk": analysis.has_regulatory_risk,
+            }
+            import uuid
+            tmp = cache_file.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f)
+            tmp.replace(cache_file)
+        except Exception as e:
+            logger.warning("AI cache write failed for %s: %s", ticker, e)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+        return analysis

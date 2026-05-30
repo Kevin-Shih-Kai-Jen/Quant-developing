@@ -165,7 +165,8 @@ class SECEdgarClient:
         # 檢查快取
         if cache_file.exists():
             mtime = datetime.fromtimestamp(cache_file.stat().st_mtime, tz=timezone.utc)
-            if datetime.now(timezone.utc) - mtime < self._cache_ttl:
+            age = datetime.now(timezone.utc) - mtime
+            if timedelta(0) <= age < self._cache_ttl:
                 try:
                     with open(cache_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
@@ -199,6 +200,153 @@ class SECEdgarClient:
         except Exception as e:
             logger.exception("Error parsing XBRL facts for %s: %s", ticker, e)
             return []
+
+    def get_filing_text(self, ticker: str, filing_type: str = "10-K",
+                        sections: list[str] | None = None) -> dict[str, str]:
+        """
+        取得一家公司最新 Filing 的指定 section 文本。
+        """
+        import re
+
+        cik = self.resolve_cik(ticker)
+        if not cik:
+            return {}
+
+        submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        subs_data = self._get_json(submissions_url)
+        if not subs_data:
+            return {}
+
+        recent = subs_data.get("filings", {}).get("recent", {})
+        forms = recent.get("form", [])
+        accessions = recent.get("accessionNumber", [])
+        primary_docs = recent.get("primaryDocument", [])
+
+        target_idx = None
+        for i, form in enumerate(forms):
+            if form == filing_type:
+                target_idx = i
+                break
+
+        if target_idx is None:
+            logger.warning("No %s found for %s", filing_type, ticker)
+            return {}
+
+        accession = accessions[target_idx].replace("-", "")
+        primary_doc = primary_docs[target_idx]
+
+        cik_int = cik.lstrip("0") or "0"
+        filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{primary_doc}"
+
+        cache_file = self._cache_dir / f"{cik}_{filing_type}.txt"
+        if cache_file.exists():
+            mtime = datetime.fromtimestamp(cache_file.stat().st_mtime, tz=timezone.utc)
+            age = datetime.now(timezone.utc) - mtime
+            if timedelta(0) <= age < self._cache_ttl:
+                try:
+                    text = cache_file.read_text(encoding="utf-8")
+                    return self._extract_sections(text, sections)
+                except Exception:
+                    pass  # 快取損壞，重新下載
+
+        self._enforce_rate_limit()
+        try:
+            resp = self._session.get(filing_url, timeout=self._timeout)
+            resp.raise_for_status()
+            html = resp.text
+
+            MAX_HTML_CHARS = 2_000_000
+            if len(html) > MAX_HTML_CHARS:
+                logger.warning("Filing HTML for %s is %d chars, truncating to %d",
+                               ticker, len(html), MAX_HTML_CHARS)
+                html = html[:MAX_HTML_CHARS]
+
+        except requests.RequestException as e:
+            logger.warning("Filing download failed for %s: %s", ticker, e)
+            return {}
+
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'&[a-zA-Z]+;', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        import uuid
+        tmp = cache_file.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(cache_file)
+        except Exception as e:
+            logger.warning("Failed to cache filing text for %s: %s", ticker, e)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+        return self._extract_sections(text, sections)
+
+    def _extract_sections(self, full_text: str,
+                          sections: list[str] | None = None) -> dict[str, str]:
+        """從 10-K 純文字中，用關鍵字模糊匹配抽取指定章節。"""
+        from ._constants import LLM_MAX_INPUT_CHARS
+        import re
+        
+        if sections is None:
+            sections = ["mda", "risk"]
+
+        safe_text = full_text.lower()
+        safe_text = safe_text.replace("\u2018", "").replace("\u2019", "")
+        safe_text = safe_text.replace("\u201c", "").replace("\u201d", "")
+        safe_text = safe_text.replace("'", "").replace("'", "")
+        safe_text = re.sub(r'\s+', ' ', safe_text)
+
+        TOC_SKIP = 5000 if len(safe_text) > 10000 else 0
+
+        SECTION_MARKERS = {
+            "mda": [
+                "management's discussion and analysis",
+                "management discussion and analysis",
+                "md&a",
+            ],
+            "risk": [
+                "risk factors",
+            ],
+            "business": [
+                "description of business",
+                "business overview",
+            ],
+        }
+
+        MAX_SECTION_CHARS = LLM_MAX_INPUT_CHARS
+        result = {}
+
+        for section_key in sections:
+            markers = SECTION_MARKERS.get(section_key, [])
+            clean_markers = [m.replace("'", "").replace("'", "") for m in markers]
+            best_start = -1
+
+            for marker in clean_markers:
+                idx = safe_text.find(marker, TOC_SKIP)
+                if idx != -1:
+                    best_start = idx
+                    break
+
+            if best_start == -1:
+                for marker in clean_markers:
+                    idx = safe_text.find(marker)
+                    if idx != -1:
+                        best_start = idx
+                        break
+
+            if best_start == -1:
+                result[section_key] = ""
+                continue
+
+            chunk = full_text[best_start : best_start + MAX_SECTION_CHARS]
+            result[section_key] = chunk
+
+        return result
 
     # ── Private Methods ───────────────────────────────────
 

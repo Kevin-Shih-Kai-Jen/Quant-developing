@@ -1483,6 +1483,7 @@
        ========================================================= */
 
     // ===== State =====
+    let allocationChart = null;
     let currentPage = 'dashboard';
     let dashboardInterval = null;
     let chatHistory = [];
@@ -2237,12 +2238,9 @@
         alphaIsScanning = true;
 
         const btn = document.getElementById('alphaFullScanBtn');
-        if (btn) btn.disabled = true;
-
         const fullScanText = document.getElementById('alphaFullScanText');
         const fullScanIcon = document.getElementById('alphaFullScanIcon');
-        if (fullScanText) fullScanText.textContent = '掃描中...';
-        if (fullScanIcon) fullScanIcon.textContent = '⏳';
+        if (btn) btn.disabled = true;
 
         alphaHideError();
         const emptyEl = document.getElementById('alphaEmpty');
@@ -2253,44 +2251,95 @@
         if (gridEl) gridEl.style.display = 'none';
 
         const progressEl = document.getElementById('alphaProgress');
-        if (progressEl) progressEl.style.display = 'block';
+        const progressBar = progressEl ? progressEl.querySelector('.alpha-progress-bar') : null;
+        if (progressEl) {
+            progressEl.style.display = 'block';
+            if (progressBar) progressBar.style.width = '10%'; // initial progress
+        }
 
         const t0 = performance.now();
+        const evtSource = new EventSource('/api/alpha/signals/stream');
 
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 180000);
-            let resp;
+        evtSource.onmessage = async (e) => {
             try {
-                resp = await fetch('/api/alpha/signals', { signal: controller.signal });
-            } catch (fetchErr) {
-                clearTimeout(timeoutId);
-                if (fetchErr.name === 'AbortError') throw new Error('請求超時（3 分鐘未回應），請稍後再試');
-                throw fetchErr;
-            }
-            clearTimeout(timeoutId);
-            if (!resp.ok) {
-                const errData = await resp.json().catch(() => ({}));
-                throw new Error(errData.detail || 'HTTP ' + resp.status);
-            }
-            const data = await resp.json();
+                const data = JSON.parse(e.data);
+                if (data.message) {
+                    console.log('Progress:', data.message);
+                    if (progressBar) {
+                        let currentWidth = parseFloat(progressBar.style.width) || 10;
+                        if (currentWidth < 90) progressBar.style.width = (currentWidth + 5) + '%';
+                    }
+                }
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
 
-            if (!data || !Array.isArray(data.signals)) {
-                throw new Error('無效的回傳資料');
+                if (data.done) {
+                    evtSource.close();
+                    if (progressBar) progressBar.style.width = '100%';
+                    
+                    const resp = await fetch('/api/alpha/history');
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const historyData = await resp.json();
+                    
+                    if (!historyData || !historyData.data || !Array.isArray(historyData.data.signals)) {
+                        throw new Error('無效的歷史回傳資料');
+                    }
+                    
+                    const t1 = performance.now();
+                    alphaRenderSignalsGrid(historyData.data, ((t1 - t0) / 1000).toFixed(1));
+                    alphaIsScanning = false;
+                    _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl);
+                }
+            } catch (err) {
+                evtSource.close();
+                console.error('Alpha scan stream error:', err);
+                alphaShowError('全市場掃描失敗：' + alphaEscapeHtml(err.message));
+                alphaIsScanning = false;
+                _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl);
             }
+        };
 
-            const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-            alphaRenderSignalsGrid(data, elapsed);
-        } catch (err) {
-            console.error('Alpha full scan error:', err);
-            alphaShowError('全市場掃描失敗：' + alphaEscapeHtml(err.message));
-        } finally {
-            alphaIsScanning = false;
-            if (btn) btn.disabled = false;
-            if (fullScanText) fullScanText.textContent = '全市場掃描';
-            if (fullScanIcon) fullScanIcon.textContent = '🌐';
-            if (progressEl) progressEl.style.display = 'none';
-        }
+        let sseRetryCount = 0;
+        const SSE_MAX_RETRIES = 3;
+
+        evtSource.onerror = (err) => {
+            // EventSource.CONNECTING = 0, OPEN = 1, CLOSED = 2
+            if (evtSource.readyState === EventSource.CLOSED) {
+                // 伺服器主動關閉連線 → 不重試
+                console.error('EventSource closed by server:', err);
+                alphaShowError('全市場掃描連線被伺服器關閉，請稍後再試。');
+                alphaIsScanning = false;
+                _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl);
+            } else if (evtSource.readyState === EventSource.CONNECTING) {
+                // 瀏覽器正在自動重連
+                sseRetryCount++;
+                console.warn(`EventSource reconnecting... (attempt ${sseRetryCount}/${SSE_MAX_RETRIES})`);
+                if (sseRetryCount >= SSE_MAX_RETRIES) {
+                    evtSource.close();
+                    console.error('EventSource max retries exceeded');
+                    alphaShowError('全市場掃描連線失敗（已重試 ' + SSE_MAX_RETRIES + ' 次），請稍後再試。');
+                    alphaIsScanning = false;
+                    _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl);
+                }
+                // else: 讓 EventSource 自動重連，不關閉
+            } else {
+                // 其他未知狀態
+                evtSource.close();
+                console.error('EventSource unknown error:', err);
+                alphaShowError('全市場掃描連線失敗，請稍後再試。');
+                alphaIsScanning = false;
+                _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl);
+            }
+        };
+    }
+
+    function _alphaResetScanBtn(btn, fullScanText, fullScanIcon, progressEl) {
+        if (btn) btn.disabled = false;
+        if (fullScanText) fullScanText.textContent = '全市場掃描';
+        if (fullScanIcon) fullScanIcon.textContent = '🌐';
+        if (progressEl) progressEl.style.display = 'none';
     }
 
     // Render Grid
@@ -2334,6 +2383,7 @@
 
         const displaySignals = signals.slice(0, MAX_DISPLAY);
         const fragment = document.createDocumentFragment();
+        const prevScores = data.previous_scores || {};
 
         for (const s of displaySignals) {
             if (!s) continue;
@@ -2343,6 +2393,18 @@
             const scoreColor = alphaGetScoreColor(score);
             const scorePct = Math.max(0, Math.min(Math.round(score * 100), 100));
 
+            // 趨勢箭頭邏輯
+            let trendHtml = '';
+            if (s.ticker && prevScores[s.ticker] !== undefined) {
+                const prev = prevScores[s.ticker];
+                const diff = Number((score - prev).toFixed(4));
+                if (diff >= 0.01) trendHtml = '<span style="color:var(--color-buy);margin-left:4px;font-size:0.8rem;" title="+' + diff.toFixed(2) + '">↑</span>';
+                else if (diff <= -0.01) trendHtml = '<span style="color:var(--color-avoid);margin-left:4px;font-size:0.8rem;" title="' + diff.toFixed(2) + '">↓</span>';
+                else trendHtml = '<span style="color:var(--text-muted);margin-left:4px;font-size:0.8rem;" title="持平">→</span>';
+            } else {
+                trendHtml = '<span style="color:var(--text-muted);margin-left:4px;font-size:0.7rem;" title="新進榜">🆕</span>';
+            }
+
             tr.innerHTML = ''
                 + '<td><span class="alpha-ticker">' + alphaEscapeHtml(s.ticker ?? '—') + '</span>'
                 + '<span class="alpha-company">' + alphaEscapeHtml(s.company_name ?? '') + '</span></td>'
@@ -2350,7 +2412,7 @@
                 + alphaGetSignalLabel(s.signal_strength) + '</span></td>'
                 + '<td><div class="alpha-score-bar">'
                 + '<div class="alpha-score-track"><div class="alpha-score-fill" style="width:' + scorePct + '%;background:' + scoreColor + ';"></div></div>'
-                + '<span class="alpha-score-value" style="color:' + scoreColor + ';">' + alphaFormatScore(score) + '</span>'
+                + '<span class="alpha-score-value" style="color:' + scoreColor + ';">' + alphaFormatScore(score) + trendHtml + '</span>'
                 + '</div></td>'
                 + '<td>' + alphaCheckIcon(s.fundamental_pass) + '</td>'
                 + '<td>' + alphaCheckIcon(s.technical_confirm) + '</td>'
@@ -2442,6 +2504,70 @@
             html += '</div>';
         }
 
+        // Supply Chain Visualization
+        if (s.supply_chain && Array.isArray(s.supply_chain.edges) && s.supply_chain.edges.length > 0) {
+            html += '<div style="margin-top:16px;">';
+            html += '<div class="card-title" style="font-size:0.78rem;margin-bottom:8px;"><span class="title-icon">🔗</span> 供應鏈圖譜</div>';
+            
+            const center = s.supply_chain.center_ticker;
+            const suppliers = s.supply_chain.edges.filter(e => e.relation === 'supplier');
+            const customers = s.supply_chain.edges.filter(e => e.relation === 'customer');
+            
+            html += '<div style="display:flex; align-items:stretch; font-size:0.8rem; margin-top:8px;">';
+            
+            // Center node
+            html += '<div style="display:flex; align-items:center; font-weight:bold; width:60px;">';
+            html += alphaEscapeHtml(center);
+            html += '</div>';
+            
+            // Connection lines and nodes
+            html += '<div style="flex-grow:1; display:flex; flex-direction:column; justify-content:center;">';
+            
+            const renderNode = (n, typeLabel, colorVar) => {
+                const pct = n.revenue_pct ? Math.round(n.revenue_pct * 100) : 0;
+                let barHtml = '';
+                if (pct > 0) {
+                    barHtml = '<div style="flex-grow:1; max-width:80px; height:4px; background:var(--border-color); border-radius:2px; margin-left:8px; overflow:hidden;">'
+                            + '<div style="height:100%; width:' + pct + '%; background:var(' + colorVar + ');"></div></div>';
+                }
+                return '<div style="display:flex; align-items:center; margin:4px 0;">'
+                     + '<div style="width:20px; border-top:1px solid var(--border-card);"></div>'
+                     + '<div style="padding:4px 8px; border:1px solid var(--border-card); border-radius:4px; margin-left:4px; background:rgba(255,255,255,0.02); display:flex; align-items:center; min-width:180px;">'
+                     + '<span style="font-weight:600; width:50px;">' + alphaEscapeHtml(n.source_ticker === center ? n.target_ticker : n.source_ticker) + '</span>'
+                     + '<span style="color:var(--text-muted); font-size:0.7rem; margin-left:4px;">(' + typeLabel + (pct > 0 ? ', ' + pct + '%' : '') + ')</span>'
+                     + barHtml
+                     + '</div></div>';
+            };
+            
+            html += '<div style="border-left:2px solid var(--border-card); padding:4px 0; margin-left:8px;">';
+            for (const sup of suppliers) html += renderNode(sup, '供應商', '--color-buy');
+            for (const cust of customers) html += renderNode(cust, '客戶', '--color-sell');
+            html += '</div>';
+            
+            html += '</div></div></div>';
+        }
+
+        // Advanced Recursive Supply Chain Scan
+        const recursiveCenter = s.ticker || (s.supply_chain && s.supply_chain.center_ticker) || '';
+        if (recursiveCenter) {
+            html += '<div style="margin-top:16px; padding-top:12px; border-top:1px dashed var(--border-card);">';
+            html += '<div class="card-title" style="font-size:0.78rem;margin-bottom:8px;"><span class="title-icon">🕸️</span> 深度掃描</div>';
+            html += '<div style="margin-top: 8px;">';
+            html += `<button id="alphaRecursiveBtn" class="alpha-action-btn" onclick="alphaRecursiveExpand('${recursiveCenter}')" style="padding:4px 8px; background:var(--border-card); border:1px solid #555; border-radius:4px; color:#fff; cursor:pointer;">`;
+            html += '<span id="alphaRecursiveIcon">🕸️</span> <span id="alphaRecursiveText">進階：遞迴展開供應鏈</span>';
+            html += '</button>';
+            html += '<div id="alphaRecursiveControls" style="display:none; margin-top:8px; font-size:0.8rem;">';
+            html += '<label>深度: <select id="alphaRecursiveDepth" style="background:transparent; border:1px solid #444; color:#fff; border-radius:4px; padding:2px;"><option value="1">1 層</option><option value="2">2 層</option><option value="3" selected>3 層</option></select></label>';
+            html += '<label style="margin-left:8px;">API 預算: <input type="number" id="alphaRecursiveMaxCalls" value="30" min="5" max="50" step="5" style="width:50px; background:transparent; border:1px solid #444; color:#fff; border-radius:4px; padding:2px;"></label>';
+            html += '<button onclick="alphaStartRecursive(\'' + recursiveCenter + '\')" style="margin-left:8px; padding:4px 12px; background:var(--color-primary); border:none; border-radius:4px; color:#fff; cursor:pointer;">開始展開</button>';
+            html += '</div>';
+            html += '<div id="alphaRecursiveStatus" style="display:none; margin-top:8px; font-size:0.8rem; color:var(--color-primary);"></div>';
+            html += '<canvas id="alphaSupplyChainCanvas" width="800" height="600" style="display:none; border:1px solid var(--border-card); border-radius:8px; margin-top:16px; width:100%; background:rgba(0,0,0,0.2);"></canvas>';
+            html += '<div id="alphaRecursiveCost" style="display:none; margin-top:8px; font-size:0.8rem; gap:16px; color:var(--text-muted); flex-wrap:wrap;"></div>';
+            html += '</div>';
+            html += '</div>';
+        }
+
         // Valuation
         html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-card);display:flex;justify-content:space-between;font-size:0.82rem;">';
         html += '<span style="color:var(--text-muted);">估值等級</span>';
@@ -2452,6 +2578,195 @@
 
         el.innerHTML = html;
     }
+
+
+    function alphaRecursiveExpand(center) {
+        document.getElementById('alphaRecursiveBtn').style.display = 'none';
+        document.getElementById('alphaRecursiveControls').style.display = 'block';
+    }
+
+    let alphaRecursiveSource = null;
+    let alphaRecursiveNodes = [];
+    let alphaRecursiveEdges = [];
+
+    function alphaStartRecursive(center) {
+        const depth = document.getElementById('alphaRecursiveDepth').value;
+        const maxCalls = document.getElementById('alphaRecursiveMaxCalls').value;
+        const controls = document.getElementById('alphaRecursiveControls');
+        const status = document.getElementById('alphaRecursiveStatus');
+        const canvas = document.getElementById('alphaSupplyChainCanvas');
+        const cost = document.getElementById('alphaRecursiveCost');
+
+        controls.style.display = 'none';
+        status.style.display = 'block';
+        status.innerText = '連線中...';
+        canvas.style.display = 'block';
+        cost.style.display = 'flex';
+        cost.innerHTML = '';
+        
+        alphaRecursiveNodes = [{ ticker: center, depth: 0, llm_source: 'gemini' }];
+        alphaRecursiveEdges = [];
+        drawRecursiveCanvas(center);
+
+        if (alphaRecursiveSource) alphaRecursiveSource.close();
+
+        const t0 = performance.now();
+        alphaRecursiveSource = new EventSource(`/api/alpha/supply-chain/${center}/recursive/stream?depth=${depth}&max_calls=${maxCalls}`);
+        
+        alphaRecursiveSource.onmessage = function(e) {
+            const data = JSON.parse(e.data);
+            if (data.type === 'progress') {
+                status.innerText = data.message;
+            } else if (data.type === 'node_done') {
+                // We could add node to alphaRecursiveNodes here to show incrementally
+                // But it's easier to just re-render when done, or incremental render if needed.
+            } else if (data.type === 'done') {
+                status.innerText = '展開完成！';
+                const graph = data.data;
+                alphaRecursiveNodes = graph.nodes;
+                alphaRecursiveEdges = graph.edges;
+                drawRecursiveCanvas(graph.center_ticker);
+                
+                const t1 = performance.now();
+                const costData = graph.cost_summary;
+                cost.innerHTML = `
+                    <span>🌐 雲端 API: <strong>${costData.gemini_calls}</strong> 次</span>
+                    <span>🏠 本地推理: <strong>${costData.ollama_calls}</strong> 次</span>
+                    <span>💾 快取命中: <strong>${costData.cache_hits}</strong> 次</span>
+                    <span>⏱️ 耗時: <strong>${((t1 - t0) / 1000).toFixed(1)}</strong> 秒</span>
+                `;
+                alphaRecursiveSource.close();
+            } else if (data.type === 'error') {
+                status.innerText = '發生錯誤: ' + data.message;
+                status.style.color = 'var(--color-sell)';
+                alphaRecursiveSource.close();
+            }
+        };
+        alphaRecursiveSource.onerror = function() {
+            status.innerText = '連線中斷';
+            status.style.color = 'var(--color-sell)';
+            alphaRecursiveSource.close();
+        };
+    }
+
+    function drawRecursiveCanvas(centerTicker) {
+        const canvas = document.getElementById('alphaSupplyChainCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const centerX = w / 2;
+        const centerY = h / 2;
+        const radii = [0, 120, 220, 320];
+
+        // Layout
+        const layers = {};
+        alphaRecursiveNodes.forEach(n => {
+            if (!layers[n.depth]) layers[n.depth] = [];
+            layers[n.depth].push(n);
+        });
+
+        const pos = {};
+        Object.keys(layers).forEach(depthStr => {
+            const depth = parseInt(depthStr);
+            const nodes = layers[depth];
+            if (depth === 0) {
+                pos[nodes[0].ticker] = { x: centerX, y: centerY, node: nodes[0] };
+            } else {
+                const r = radii[depth];
+                const step = (2 * Math.PI) / nodes.length;
+                nodes.forEach((n, i) => {
+                    const angle = step * i - Math.PI / 2;
+                    pos[n.ticker] = {
+                        x: centerX + r * Math.cos(angle),
+                        y: centerY + r * Math.sin(angle),
+                        node: n
+                    };
+                });
+            }
+        });
+
+        // Draw rings
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i < radii.length; i++) {
+            if (layers[i]) {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radii[i], 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+        }
+
+        // Draw edges
+        alphaRecursiveEdges.forEach(e => {
+            const p1 = pos[e.source_ticker];
+            const p2 = pos[e.target_ticker];
+            if (!p1 || !p2) return;
+            
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            
+            if (e.confidence >= 0.7) {
+                ctx.setLineDash([]);
+                ctx.lineWidth = Math.max(1, (e.revenue_pct || 0) * 10);
+            } else {
+                ctx.setLineDash([5, 5]);
+                ctx.lineWidth = 1;
+            }
+            
+            // color by relation
+            if (e.relation === 'SUPPLIER') ctx.strokeStyle = 'rgba(74, 144, 217, 0.4)'; // blue
+            else if (e.relation === 'CUSTOMER') ctx.strokeStyle = 'rgba(39, 174, 96, 0.4)'; // green
+            else if (e.relation === 'COMPETITOR') ctx.strokeStyle = 'rgba(231, 76, 60, 0.4)'; // red
+            else ctx.strokeStyle = 'rgba(243, 156, 18, 0.4)'; // yellow
+
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+
+        // Draw nodes
+        Object.values(pos).forEach(p => {
+            const n = p.node;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, n.depth === 0 ? 30 : 20, 0, 2 * Math.PI);
+            
+            if (n.depth === 0) ctx.fillStyle = '#fff';
+            else if (n.llm_source === 'not_expanded') ctx.fillStyle = '#666';
+            else ctx.fillStyle = '#444';
+            
+            ctx.fill();
+            if (n.llm_source === 'not_expanded') {
+                ctx.strokeStyle = '#fff';
+                ctx.setLineDash([2, 2]);
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // text
+            ctx.fillStyle = n.depth === 0 ? '#000' : '#fff';
+            ctx.font = n.depth === 0 ? 'bold 14px sans-serif' : '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(n.ticker, p.x, p.y);
+
+            // Icon
+            if (n.depth > 0) {
+                let icon = '';
+                if (n.llm_source === 'gemini' || n.llm_source === 'gemini_fallback') icon = '🌐';
+                else if (n.llm_source === 'ollama') icon = '🏠';
+                else if (n.llm_source === 'cache') icon = '💾';
+                if (icon) {
+                    ctx.font = '10px sans-serif';
+                    ctx.fillText(icon, p.x + 12, p.y - 12);
+                }
+            }
+        });
+    }
+
 
     function alphaDetailFromTable(ticker) {
         if (!ticker) return;

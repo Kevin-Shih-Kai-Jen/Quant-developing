@@ -12,7 +12,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]  # nexus_quant_os/alpha_hunt
 ALPHA_HUNTER_DATA_DIR = _PROJECT_ROOT / "data" / "alpha_hunter"
 EDGAR_CACHE_DIR       = ALPHA_HUNTER_DATA_DIR / "edgar_cache"
 SUPPLY_CHAIN_CACHE    = ALPHA_HUNTER_DATA_DIR / "supply_chain.json"
+SUPPLY_CHAIN_NODES_DIR = ALPHA_HUNTER_DATA_DIR / "supply_chain_nodes"
 SIGNALS_HISTORY_DIR   = ALPHA_HUNTER_DATA_DIR / "signals"
+AI_CACHE_DIR          = ALPHA_HUNTER_DATA_DIR / "ai_cache"
 
 # ── SEC EDGAR API ─────────────────────────────────────────
 EDGAR_BASE_URL      = "https://data.sec.gov"
@@ -34,7 +36,13 @@ TECHNICAL_MA_PERIOD    = 200         # 200 日移動平均
 LLM_MAX_INPUT_CHARS    = 8000        # MD&A 截斷長度
 LLM_TEMPERATURE        = 0.2         # 低溫度 → 穩定輸出
 LLM_TIMEOUT            = 60.0        # 秒
-LLM_MAX_RETRIES        = 3
+LLM_MAX_RETRIES        = 2
+
+# ── Ollama ────────────────────────────────────────────────
+OLLAMA_BASE_URL        = "http://localhost:11434"
+OLLAMA_MODEL           = "gemma4:e4b"
+OLLAMA_TIMEOUT         = 120.0       # 秒
+OLLAMA_MAX_INPUT_CHARS = 4000        # Gemma4:e4b 上限較小
 
 # ── 掃描範圍 ──────────────────────────────────────────────
 DEFAULT_SCAN_UNIVERSE = [

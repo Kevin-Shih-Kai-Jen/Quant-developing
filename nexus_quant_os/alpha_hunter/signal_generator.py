@@ -41,11 +41,16 @@ class AlphaSignalGenerator:
         self._tracker = tracker or SupplyChainTracker(gemini_api_key=gemini_api_key)
         self._analyst = analyst or AIAnalyst(api_key=gemini_api_key)
 
+    def get_supply_chain(self, ticker: str) -> SupplyChainGraph:
+        """取得一家公司的供應鏈圖譜（公開 API）。"""
+        return self._tracker.build_graph(ticker.upper())
+
     def generate_signals(
         self,
         universe: list[str] | None = None,
         include_supply_chain: bool = True,
         include_ai_analysis: bool = True,
+        progress_callback=None,
     ) -> list[AlphaSignal]:
         """對整個投資範圍生成信號。"""
         if universe is not None:
@@ -61,6 +66,9 @@ class AlphaSignalGenerator:
                 self._scanner._universe = original_universe
         candidates = [r for r in scan_results if r.is_candidate]
         
+        if progress_callback:
+            progress_callback(f"Phase 1 complete: found {len(candidates)} candidates from {len(scan_results)} stocks.")
+            
         # 並行處理候選股（AI 分析 + 技術面確認）
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -78,12 +86,17 @@ class AlphaSignalGenerator:
         signals = []
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {executor.submit(_process_candidate, c): c for c in candidates}
-            for future in as_completed(futures):
+            for i, future in enumerate(as_completed(futures), 1):
                 result = future.result()
                 if result is not None:
                     signals.append(result)
+                if progress_callback:
+                    progress_callback(f"Processed {i}/{len(candidates)} candidates")
 
         signals.sort(key=lambda s: s.composite_score, reverse=True)
+        self._save_signal_history(signals)
+        if progress_callback:
+            progress_callback("Analysis complete.")
         return signals
 
     def generate_single(self, ticker: str) -> AlphaSignal:
@@ -112,14 +125,28 @@ class AlphaSignalGenerator:
     ) -> AlphaSignal:
         ticker = scan.ticker
         
+        # 取得 10-K 文本（供 AI 分析和供應鏈用）
+        filing_texts = {}
+        if include_ai_analysis or include_supply_chain:
+            try:
+                filing_texts = self._scanner._edgar.get_filing_text(
+                    ticker, filing_type="10-K", sections=["mda", "risk"]
+                )
+            except Exception as e:
+                logger.warning("Failed to get filing text for %s: %s", ticker, e)
+                
         graph = None
         if include_supply_chain:
-            graph = self._tracker.build_graph(ticker)
+            filing_full_text = " ".join(filing_texts.values()) if filing_texts else ""
+            graph = self._tracker.build_graph(ticker, filing_text=filing_full_text)
             
         analysis = None
         if include_ai_analysis:
-            # Here we should fetch text, but for the MVP we pass empty if not integrated with a real fetcher
-            analysis = self._analyst.analyze(ticker, mda_text="", risk_text="")
+            analysis = self._analyst.analyze(
+                ticker, 
+                mda_text=filing_texts.get("mda", ""), 
+                risk_text=filing_texts.get("risk", "")
+            )
             
         technical_ok = self._check_technical(ticker)
         
@@ -211,5 +238,25 @@ class AlphaSignalGenerator:
             return SignalStrength.BUY
         elif count >= 1:
             return SignalStrength.NEUTRAL
-        else:
             return SignalStrength.AVOID
+
+    def _save_signal_history(self, signals: list[AlphaSignal]) -> None:
+        """將生成的信號清單寫入歷史記錄。"""
+        import json
+        from ._constants import SIGNALS_HISTORY_DIR
+        
+        SIGNALS_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filepath = SIGNALS_HISTORY_DIR / f"signals_{timestamp}.json"
+        
+        try:
+            data = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "total": len(signals),
+                "signals": [s.to_dict() for s in signals]
+            }
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            logger.info("Saved signal history to %s", filepath)
+        except Exception as e:
+            logger.error("Failed to save signal history: %s", e)

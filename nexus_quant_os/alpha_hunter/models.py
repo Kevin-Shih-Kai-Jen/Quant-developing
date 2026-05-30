@@ -145,6 +145,7 @@ class SupplyChainEdge:
     relation: SupplyChainRelation
     revenue_pct: Optional[float] = None    # 佔營收百分比（小數，e.g. 0.25 = 25%）
     confidence: float = 0.5                # NLP 提取信心度 [0, 1]
+    depth: int = 0                         # 在哪一層被發現的
     source_filing: Optional[str] = None    # 來源文件（e.g. "10-K 2024"）
     last_updated: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -175,6 +176,81 @@ class SupplyChainGraph:
             tickers.add(e.source_ticker)
             tickers.add(e.target_ticker)
         return tickers
+
+
+@dataclass
+class RecursiveSupplyChainGraph:
+    """多層遞迴供應鏈圖譜。向後相容：不影響現有 SupplyChainGraph。"""
+    center_ticker: str
+    edges: list[SupplyChainEdge] = field(default_factory=list)
+    build_timestamp: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    # ── 遞迴特有欄位 ──
+    max_depth: int = 1
+    node_depths: dict[str, int] = field(default_factory=dict)
+    visited_tickers: set[str] = field(default_factory=set)
+    api_calls_used: int = 0
+    llm_source: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def total_nodes(self) -> int:
+        tickers = {self.center_ticker}
+        for e in self.edges:
+            tickers.add(e.source_ticker)
+            tickers.add(e.target_ticker)
+        return len(tickers)
+
+    @property
+    def layers(self) -> dict[int, list[str]]:
+        result: dict[int, list[str]] = {}
+        for ticker, depth in self.node_depths.items():
+            result.setdefault(depth, []).append(ticker)
+        return result
+
+    def get_edges_at_depth(self, depth: int) -> list[SupplyChainEdge]:
+        tickers_at_depth = {t for t, d in self.node_depths.items() if d == depth}
+        return [
+            e for e in self.edges
+            if e.source_ticker in tickers_at_depth or e.target_ticker in tickers_at_depth
+        ]
+
+    def to_dict(self) -> dict:
+        """轉為 JSON-safe 字典（用於 API 回傳）。"""
+        return {
+            "center_ticker": self.center_ticker,
+            "max_depth": self.max_depth,
+            "total_nodes": self.total_nodes,
+            "total_edges": len(self.edges),
+            "api_calls_used": self.api_calls_used,
+            "build_timestamp": self.build_timestamp.isoformat(),
+            "layers": {str(k): v for k, v in self.layers.items()},
+            "nodes": [
+                {
+                    "ticker": t,
+                    "depth": d,
+                    "llm_source": self.llm_source.get(t, "unknown"),
+                }
+                for t, d in sorted(self.node_depths.items(), key=lambda x: x[1])
+            ],
+            "edges": [
+                {
+                    "source_ticker": e.source_ticker,
+                    "target_ticker": e.target_ticker,
+                    "relation": e.relation.value,
+                    "revenue_pct": e.revenue_pct,
+                    "confidence": e.confidence,
+                    "depth": e.depth,
+                }
+                for e in self.edges
+            ],
+            "cost_summary": {
+                "gemini_calls": sum(1 for v in self.llm_source.values() if v in ("gemini", "gemini_fallback")),
+                "ollama_calls": sum(1 for v in self.llm_source.values() if v == "ollama"),
+                "cache_hits": sum(1 for v in self.llm_source.values() if v == "cache"),
+            }
+        }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -272,4 +348,16 @@ class AlphaSignal:
             "catalysts": self.ai_analysis.growth_catalysts if self.ai_analysis else [],
             "risks": self.ai_analysis.key_risks if self.ai_analysis else [],
             "valuation": self.scan_result.valuation_rating.value if self.scan_result else "N/A",
+            "supply_chain": {
+                "center_ticker": self.supply_chain.center_ticker,
+                "edges": [
+                    {
+                        "source_ticker": e.source_ticker,
+                        "target_ticker": e.target_ticker,
+                        "relation": e.relation.value,
+                        "revenue_pct": e.revenue_pct
+                    }
+                    for e in self.supply_chain.edges
+                ]
+            } if self.supply_chain else None,
         }

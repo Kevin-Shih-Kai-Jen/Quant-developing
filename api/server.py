@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -7,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -254,7 +255,10 @@ async def read_index():
     if not index_file.exists():
         return "<h1>Index.html not found!</h1>"
     with open(index_file, "r") as f:
-        return HTMLResponse(content=f.read())
+        return HTMLResponse(
+            content=f.read(),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
 
 
 @app.post("/api/run_pipeline", response_model=PipelineResponse)
@@ -716,12 +720,28 @@ async def get_alpha_signals():
         logger.exception("Alpha signal generation failed")
         raise HTTPException(status_code=500, detail=str(e))
 
+import re
+
+def _sanitize_ticker(ticker: str) -> str:
+    """防呆：嚴格檢查 Ticker 格式，防止路徑穿越與記憶體炸彈"""
+    ticker = ticker.upper().strip()
+    if not re.match(r"^[A-Z0-9\-\.]{1,10}$", ticker):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不合法的股票代號：{ticker[:20]}"
+        )
+    return ticker
+
 @app.get("/api/alpha/scan/{ticker}")
 async def scan_single_ticker(ticker: str):
     """掃描單一公司的完整 Alpha 分析。"""
+    ticker = _sanitize_ticker(ticker)
+    import asyncio
     try:
         generator = await _get_alpha_generator()
-        signal = generator.generate_single(ticker.upper())
+        signal = await asyncio.to_thread(
+            generator.generate_single, ticker.upper()
+        )
         return {
             "status": "success",
             "signal": signal.to_dict(),
@@ -733,9 +753,13 @@ async def scan_single_ticker(ticker: str):
 @app.get("/api/alpha/supply-chain/{ticker}")
 async def get_supply_chain(ticker: str):
     """取得一家公司的供應鏈圖譜。"""
+    ticker = _sanitize_ticker(ticker)
+    import asyncio
     try:
         generator = await _get_alpha_generator()
-        graph = generator._tracker.build_graph(ticker.upper())
+        graph = await asyncio.to_thread(
+            generator.get_supply_chain, ticker.upper()
+        )
         return {
             "status": "success",
             "center": graph.center_ticker,
@@ -754,3 +778,198 @@ async def get_supply_chain(ticker: str):
     except Exception as e:
         logger.exception("Supply chain build failed for %s", ticker)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alpha/supply-chain/{ticker}/recursive")
+async def get_recursive_supply_chain(
+    ticker: str,
+    depth: int = 3,
+    max_calls: int = 30,
+):
+    """取得一家公司的遞迴供應鏈圖譜。"""
+    ticker = _sanitize_ticker(ticker)
+    depth = max(1, min(depth, 3))            # 限制 1~3
+    max_calls = max(5, min(max_calls, 50))   # 限制 5~50
+    import asyncio
+
+    try:
+        generator = await _get_alpha_generator()
+        graph = await asyncio.to_thread(
+            generator._tracker.build_recursive_graph,
+            ticker, depth, max_calls
+        )
+        return {"status": "success", "data": graph.to_dict()}
+    except Exception as e:
+        logger.exception("Recursive supply chain failed for %s", ticker)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alpha/supply-chain/{ticker}/recursive/stream")
+async def stream_recursive_supply_chain(
+    ticker: str,
+    request: Request,
+    depth: int = 3,
+    max_calls: int = 30,
+):
+    """取得一家公司的遞迴供應鏈圖譜（SSE 進度回報）。"""
+    ticker = _sanitize_ticker(ticker)
+    depth = max(1, min(depth, 3))
+    max_calls = max(5, min(max_calls, 50))
+    import asyncio
+
+    q = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def progress_callback(data: dict):
+        # We need to run the queue.put in the event loop thread
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, data)
+        except Exception:
+            pass
+
+    async def event_generator():
+        generator = await _get_alpha_generator()
+        
+        # Start the blocking build_recursive_graph in a thread
+        build_task = asyncio.create_task(
+            asyncio.to_thread(
+                generator._tracker.build_recursive_graph,
+                ticker, depth, max_calls, 0.5, progress_callback
+            )
+        )
+        
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.info("Client disconnected from SSE stream")
+                    build_task.cancel()
+                    break
+
+                # Drain all queued progress messages first
+                while not q.empty():
+                    try:
+                        data = q.get_nowait()
+                        yield f"data: {json.dumps(data)}\n\n"
+                    except asyncio.QueueEmpty:
+                        break
+
+                if build_task.done():
+                    try:
+                        graph = build_task.result()
+                        yield f"data: {json.dumps({'type': 'done', 'data': graph.to_dict()})}\n\n"
+                    except Exception as e:
+                        logger.exception("Recursive supply chain task failed")
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                    return
+
+                # Wait briefly for new queue items or task completion
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=0.5)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    pass  # Loop back to check build_task and disconnection
+        except Exception as e:
+            logger.exception("SSE stream error")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/alpha/history")
+async def get_alpha_history():
+    """取得最近一次的 Alpha 信號掃描歷史與前次分數。"""
+    import json
+    from nexus_quant_os.alpha_hunter._constants import SIGNALS_HISTORY_DIR
+    
+    try:
+        if not SIGNALS_HISTORY_DIR.exists():
+            return {"status": "success", "data": None, "message": "No history found"}
+            
+        files = sorted(SIGNALS_HISTORY_DIR.glob("signals_*.json"), reverse=True)
+        if not files:
+            return {"status": "success", "data": None, "message": "No history found"}
+            
+        latest_file = files[0]
+        with open(latest_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        previous_scores = {}
+        if len(files) > 1:
+            try:
+                with open(files[1], "r", encoding="utf-8") as f:
+                    prev_data = json.load(f)
+                    for s in prev_data.get("signals", []):
+                        previous_scores[s.get("ticker")] = s.get("composite_score")
+            except Exception:
+                pass
+                
+        data["previous_scores"] = previous_scores
+            
+        return {
+            "status": "success",
+            "data": data,
+            "filename": latest_file.name
+        }
+    except Exception as e:
+        logger.exception("Failed to load signal history")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/alpha/signals/stream")
+async def stream_alpha_signals():
+    """使用 Server-Sent Events (SSE) 串流 Alpha 信號生成進度。"""
+    import asyncio
+    import json
+    from fastapi.responses import StreamingResponse
+    
+    queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    cancelled = False
+
+    def progress_callback(msg: str):
+        if cancelled:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(queue.put(f"data: {json.dumps({'message': msg})}\n\n"), loop)
+        except Exception:
+            pass
+
+    async def event_generator():
+        nonlocal cancelled
+        generator = await _get_alpha_generator()
+        
+        # 在背景執行緒啟動同步的 generate_signals，並傳入 progress_callback
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                generator.generate_signals,
+                universe=None,
+                include_supply_chain=True,
+                include_ai_analysis=True,
+                progress_callback=progress_callback
+            )
+        )
+        
+        try:
+            while not task.done():
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    yield msg
+                except asyncio.TimeoutError:
+                    # 保持連線
+                    yield ": keep-alive\n\n"
+                    
+            # 確保佇列中的所有訊息都被送出
+            while not queue.empty():
+                yield await queue.get()
+                
+            try:
+                task.result()
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as e:
+                logger.exception("Alpha signals stream failed")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        except asyncio.CancelledError:
+            cancelled = True
+            logger.info("Client disconnected during SSE stream")
+            raise
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
