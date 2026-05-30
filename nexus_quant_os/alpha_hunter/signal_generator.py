@@ -238,6 +238,7 @@ class AlphaSignalGenerator:
             return SignalStrength.BUY
         elif count >= 1:
             return SignalStrength.NEUTRAL
+        else:
             return SignalStrength.AVOID
 
     def _save_signal_history(self, signals: list[AlphaSignal]) -> None:

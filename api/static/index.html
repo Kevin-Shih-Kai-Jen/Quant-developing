@@ -2510,8 +2510,8 @@
             html += '<div class="card-title" style="font-size:0.78rem;margin-bottom:8px;"><span class="title-icon">🔗</span> 供應鏈圖譜</div>';
             
             const center = s.supply_chain.center_ticker;
-            const suppliers = s.supply_chain.edges.filter(e => e.relation === 'supplier');
-            const customers = s.supply_chain.edges.filter(e => e.relation === 'customer');
+            const suppliers = s.supply_chain.edges.filter(e => e.relation === 'SUPPLIER');
+            const customers = s.supply_chain.edges.filter(e => e.relation === 'CUSTOMER');
             
             html += '<div style="display:flex; align-items:stretch; font-size:0.8rem; margin-top:8px;">';
             
