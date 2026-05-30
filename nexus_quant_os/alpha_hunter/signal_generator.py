@@ -76,7 +76,7 @@ class AlphaSignalGenerator:
                 return None
 
         signals = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {executor.submit(_process_candidate, c): c for c in candidates}
             for future in as_completed(futures):
                 result = future.result()

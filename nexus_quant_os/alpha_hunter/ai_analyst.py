@@ -119,10 +119,15 @@ Output ONLY valid JSON. No markdown, no explanation.
             try:
                 resp = self._session.post(url, json=payload, timeout=self._timeout)
                 if resp.status_code == 429:
-                    wait = min(30, 4 ** (attempt + 1))
-                    logger.warning("Gemini 429 rate limit, backing off %ds (attempt %d)", wait, attempt+1)
-                    time.sleep(wait)
-                    continue
+                    if attempt == 0:
+                        # 第一次 429：短暫等待後重試一次
+                        logger.warning("Gemini 429, short backoff 5s (attempt 1)")
+                        time.sleep(5)
+                        continue
+                    else:
+                        # 第二次 429：放棄，回傳 neutral（不值得再等）
+                        logger.warning("Gemini 429 persists, skipping AI for %s", ticker)
+                        break
                 resp.raise_for_status()
                 data = resp.json()
                 
