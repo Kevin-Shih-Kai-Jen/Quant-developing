@@ -177,6 +177,17 @@ class IntelligentRiskFirewall:
         self._is_fitted   = False
         self._lock = threading.Lock()
 
+    def __getstate__(self):
+        """Remove un-picklable threading.Lock before serialization."""
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore threading.Lock after deserialization."""
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     @classmethod
     def from_configs(
         cls,

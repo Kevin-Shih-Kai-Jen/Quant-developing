@@ -222,6 +222,17 @@ class OODAnomalyDetector:
         self._device = torch.device("cpu")
         logger.info("OODAnomalyDetector using device: %s", self._device)
 
+    def __getstate__(self):
+        """Remove un-picklable threading.Lock before serialization."""
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore threading.Lock after deserialization."""
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     # -----------------------------------------------------------------
     # 3a. Training
     # -----------------------------------------------------------------
