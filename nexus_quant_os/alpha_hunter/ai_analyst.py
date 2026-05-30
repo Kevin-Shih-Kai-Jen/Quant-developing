@@ -112,12 +112,17 @@ Output ONLY valid JSON. No markdown, no explanation.
             # 簡單的 local rate limit (Gemini API calls should be spaced out)
             with self._rate_lock:
                 now = time.monotonic()
-                if now - self._last_request_time < 2.0:
-                    time.sleep(2.0 - (now - self._last_request_time))
+                if now - self._last_request_time < 4.0:
+                    time.sleep(4.0 - (now - self._last_request_time))
                 self._last_request_time = time.monotonic()
 
             try:
                 resp = self._session.post(url, json=payload, timeout=self._timeout)
+                if resp.status_code == 429:
+                    wait = min(30, 4 ** (attempt + 1))
+                    logger.warning("Gemini 429 rate limit, backing off %ds (attempt %d)", wait, attempt+1)
+                    time.sleep(wait)
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
                 

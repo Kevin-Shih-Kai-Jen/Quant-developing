@@ -2198,13 +2198,13 @@
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
             let resp;
             try {
                 resp = await fetch('/api/alpha/scan/' + encodeURIComponent(ticker), { signal: controller.signal });
             } catch (fetchErr) {
                 clearTimeout(timeoutId);
-                if (fetchErr.name === 'AbortError') throw new Error('請求超時（15 秒未回應），請稍後再試');
+                if (fetchErr.name === 'AbortError') throw new Error('請求超時（60 秒未回應），請稍後再試');
                 throw fetchErr;
             }
             clearTimeout(timeoutId);
@@ -2259,13 +2259,13 @@
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const timeoutId = setTimeout(() => controller.abort(), 180000);
             let resp;
             try {
                 resp = await fetch('/api/alpha/signals', { signal: controller.signal });
             } catch (fetchErr) {
                 clearTimeout(timeoutId);
-                if (fetchErr.name === 'AbortError') throw new Error('請求超時（15 秒未回應），請稍後再試');
+                if (fetchErr.name === 'AbortError') throw new Error('請求超時（3 分鐘未回應），請稍後再試');
                 throw fetchErr;
             }
             clearTimeout(timeoutId);

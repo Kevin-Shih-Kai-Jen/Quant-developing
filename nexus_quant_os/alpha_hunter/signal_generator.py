@@ -61,18 +61,28 @@ class AlphaSignalGenerator:
                 self._scanner._universe = original_universe
         candidates = [r for r in scan_results if r.is_candidate]
         
-        signals = []
-        for scan in candidates:
+        # 並行處理候選股（AI 分析 + 技術面確認）
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _process_candidate(scan):
             try:
-                signal = self._generate_from_scan(
-                    scan, 
-                    include_supply_chain=include_supply_chain, 
-                    include_ai_analysis=include_ai_analysis
+                return self._generate_from_scan(
+                    scan,
+                    include_supply_chain=include_supply_chain,
+                    include_ai_analysis=include_ai_analysis,
                 )
-                signals.append(signal)
             except Exception as e:
                 logger.warning("Failed to generate signal for %s: %s", scan.ticker, e)
-                
+                return None
+
+        signals = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(_process_candidate, c): c for c in candidates}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    signals.append(result)
+
         signals.sort(key=lambda s: s.composite_score, reverse=True)
         return signals
 

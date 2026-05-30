@@ -43,16 +43,26 @@ class FinancialScanner:
         self._universe = universe or list(DEFAULT_SCAN_UNIVERSE)
 
     def scan_universe(self) -> list[ScanResult]:
-        """掃描整個投資範圍。"""
+        """掃描整個投資範圍（並行化）。"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         results = []
-        for ticker in self._universe:
+
+        def _scan_one(ticker: str) -> Optional[ScanResult]:
             try:
-                result = self.scan_single(ticker)
-                if result is not None:
-                    results.append(result)
+                return self.scan_single(ticker)
             except Exception as e:
                 logger.warning("Failed to scan %s: %s", ticker, e)
-        
+                return None
+
+        # SEC rate limit = 10 req/s，用 5 個 worker 搭配 0.12s 間隔是安全的
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_scan_one, t): t for t in self._universe}
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    results.append(result)
+
         if not results:
             logger.error("All tickers failed during financial scan.")
             return []

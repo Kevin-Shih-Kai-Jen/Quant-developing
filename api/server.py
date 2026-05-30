@@ -693,12 +693,15 @@ async def _get_alpha_generator():
 @app.get("/api/alpha/signals")
 async def get_alpha_signals():
     """回傳最新的 Alpha 信號列表。"""
+    import asyncio
     try:
         generator = await _get_alpha_generator()
         from nexus_quant_os.alpha_hunter.models import SignalStrength
         
-        signals = generator.generate_signals(
-            include_supply_chain=False,  # 預設關閉（太慢）
+        # 在 thread pool 中執行阻塞操作，避免卡住 event loop
+        signals = await asyncio.to_thread(
+            generator.generate_signals,
+            include_supply_chain=False,
             include_ai_analysis=True,
         )
         return {
