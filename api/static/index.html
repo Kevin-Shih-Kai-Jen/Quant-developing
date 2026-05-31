@@ -2159,6 +2159,11 @@
 
     // Single Scan
     async function alphaScanSingle() {
+        if (alphaScanController) {
+            alphaScanController.abort();
+            alphaScanController = null;
+        }
+        
         const input = document.getElementById('alphaTickerInput');
         if (!input) return;
 
@@ -2605,6 +2610,7 @@
 
     // --- Global State ---
     let alphaRecursiveSource = null;
+    let alphaScanController = null; // Used to abort background fetch requests
     let alphaRecursiveNodes = [];
     let alphaRecursiveEdges = [];
     let currentCenterTicker = null;
@@ -2993,6 +2999,10 @@
     };
 
     function alphaStartRecursive(center) {
+        if (alphaScanController) {
+            alphaScanController.abort();
+            alphaScanController = null;
+        }
         const depth = document.getElementById('alphaRecursiveDepth').value;
         const maxCalls = document.getElementById('alphaRecursiveMaxCalls').value;
         const controls = document.getElementById('alphaRecursiveControls');
@@ -3126,19 +3136,35 @@
             tickersToScan.push(n);
         });
         
-        // 如果全部都已掃描完成，直接跳到 Phase 3
+        // 如果全部都已掃描完成，提示使用者
         if (tickersToScan.length === 0) {
             status.innerText = '全部節點已從快取載入，跳至動能傳染計算...';
-            // 仍需發送所有節點給後端做 spillover 計算
-            tickersToScan.push(...alphaRecursiveNodes);
         }
         
+        // 建構 all_tickers，帶上快取的分數，供後端算動能傳染
+        const allTickersPayload = alphaRecursiveNodes.map(n => {
+            const cached = enrichedNodeData[n.ticker];
+            return {
+                ticker: n.ticker,
+                depth: n.depth,
+                llm_source: n.llm_source || 'gemini',
+                composite_score: (cached && cached.composite_score !== undefined) ? cached.composite_score : null
+            };
+        });
+        
         try {
+            if (alphaScanController) {
+                alphaScanController.abort();
+            }
+            alphaScanController = new AbortController();
+            
             const response = await fetch('/api/alpha/supply-chain-radar/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: alphaScanController.signal,
                 body: JSON.stringify({
                     tickers: tickersToScan,
+                    all_tickers: allTickersPayload,
                     edges: alphaRecursiveEdges,
                     center_ticker: currentCenterTicker
                 })
@@ -3166,6 +3192,10 @@
                 sseEventQueue.push(buffer.trim());
             }
         } catch (e) {
+            if (e.name === 'AbortError') {
+                console.log('Previous radar scan aborted.');
+                return;
+            }
             status.innerText = '掃描失敗: ' + e;
             status.style.color = 'var(--color-sell)';
         }
@@ -3437,23 +3467,14 @@
             ctx.font = (radius > 25) ? 'bold 14px sans-serif' : '11px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            const labelY = (n.company_name && radius > 18) ? p.y - 6 : p.y;
+            const labelY = p.y;
             ctx.fillText(n.ticker, p.x, labelY);
             
             // Score text (middle)
             if (n.composite_score != null && radius > 22) {
                 ctx.font = '9px sans-serif';
                 ctx.fillStyle = 'rgba(255,255,255,0.8)';
-                ctx.fillText((n.composite_score * 100).toFixed(0) + '%', p.x, p.y + 8);
-            }
-
-            // Company name (bottom, abbreviated)
-            if (n.company_name && radius > 18) {
-                ctx.font = '9px sans-serif';
-                ctx.fillStyle = 'rgba(255,255,255,0.5)';
-                let shortName = n.company_name;
-                if (shortName.length > 12) shortName = shortName.substring(0, 11) + '…';
-                ctx.fillText(shortName, p.x, p.y + (n.composite_score != null ? 20 : 12));
+                ctx.fillText((n.composite_score * 100).toFixed(0) + '%', p.x, p.y + 10);
             }
         });
 

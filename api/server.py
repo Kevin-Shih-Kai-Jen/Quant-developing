@@ -889,12 +889,17 @@ async def stream_recursive_supply_chain(
 async def radar_scan(request: Request):
     body = await request.json()
     tickers = body.get("tickers", [])
+    all_tickers = body.get("all_tickers", [])
     edges = body.get("edges", [])
     center_ticker = body.get("center_ticker", "")
     
+    # 向後相容
+    if not all_tickers:
+        all_tickers = tickers
+    
     # 【防禦機制】惡意 Payload 炸彈防護
-    if len(tickers) > 50:
-        raise HTTPException(status_code=400, detail="Too many tickers (max 50).")
+    if len(tickers) > 50 or len(all_tickers) > 100:
+        raise HTTPException(status_code=400, detail="Too many tickers (max 50 for scanning, 100 for graph).")
     
     import asyncio
     import json
@@ -909,7 +914,7 @@ async def radar_scan(request: Request):
         from nexus_quant_os.alpha_hunter.models import EnrichedNode
         from nexus_quant_os.alpha_hunter.radar import node_to_dict, compute_degree_centrality, compute_momentum_spillover, generate_graph_rag_analysis
         
-        # Build enriched_nodes initialization
+        # Build enriched_nodes initialization for Phase 2
         enriched_nodes: dict[str, EnrichedNode] = {}
         for t in tickers:
             ticker_name = t.get("ticker", "")
@@ -919,10 +924,26 @@ async def radar_scan(request: Request):
                 depth=t.get("depth", 0), 
                 llm_source=t.get("llm_source", "unknown")
             )
+            
+        # Build spillover_nodes for Phase 3 (including cached nodes)
+        spillover_nodes: dict[str, EnrichedNode] = {}
+        for t in all_tickers:
+            ticker_name = t.get("ticker", "")
+            if not ticker_name: continue
+            # 先建立一個佔位節點，帶上快取傳來分數
+            comp_score = t.get("composite_score")
+            spillover_nodes[ticker_name] = EnrichedNode(
+                ticker=ticker_name,
+                depth=t.get("depth", 0),
+                llm_source=t.get("llm_source", "unknown"),
+                composite_score=comp_score if comp_score is not None else 0.5
+            )
 
-        # Compute degree centrality first
-        centralities = compute_degree_centrality(tickers, edges)
+        # Compute degree centrality first using all_tickers
+        centralities = compute_degree_centrality(all_tickers, edges)
         for t, c in centralities.items():
+            if t in spillover_nodes:
+                spillover_nodes[t].degree_centrality = c
             if t in enriched_nodes:
                 enriched_nodes[t].degree_centrality = c
         
@@ -990,28 +1011,36 @@ async def radar_scan(request: Request):
         if scan_task.cancelled():
             return
             
+        # 把 Phase 2 剛掃描完的結果更新回 spillover_nodes
+        for t, node in enriched_nodes.items():
+            if t in spillover_nodes:
+                # 保留已算好的 centrality
+                centrality = spillover_nodes[t].degree_centrality
+                spillover_nodes[t] = node
+                spillover_nodes[t].degree_centrality = centrality
+            
         # 模組 3: 動能傳染演算法
         yield f"data: {json.dumps({'type': 'progress', 'message': '正在計算動能傳染與 Graph-RAG 分析...'})}\n\n"
         
         try:
-            scores = compute_momentum_spillover(enriched_nodes, edges)
+            scores = compute_momentum_spillover(spillover_nodes, edges)
         except Exception as e:
             logger.warning(f"Spillover computation failed: {repr(e)}")
-            scores = {t: (n.composite_score if n.composite_score is not None else 0.5) for t, n in enriched_nodes.items()}
-            # 【關鍵修復】crash 時手動把 enriched_nodes 的欄位補上
+            scores = {t: (n.composite_score if n.composite_score is not None else 0.5) for t, n in spillover_nodes.items()}
+            # 【關鍵修復】crash 時手動把 spillover_nodes 的欄位補上
             # 否則 node_to_dict() 會送出 network_alpha_score=0, spillover_delta=0
-            for t, n in enriched_nodes.items():
+            for t, n in spillover_nodes.items():
                 n.network_alpha_score = scores[t]
                 n.spillover_delta = 0.0
         
         # Broadcast spillover done
-        spillover_data = {t: node_to_dict(n) for t, n in enriched_nodes.items()}
+        spillover_data = {t: node_to_dict(n) for t, n in spillover_nodes.items()}
         yield f"data: {json.dumps({'type': 'spillover_done', 'data': spillover_data})}\n\n"
         
         # 模組 4: Graph-RAG
         try:
             advisor = await _get_advisor()
-            rag_markdown = await generate_graph_rag_analysis(advisor, center_ticker, enriched_nodes, edges, scores)
+            rag_markdown = await generate_graph_rag_analysis(advisor, center_ticker, spillover_nodes, edges, scores)
         except Exception as e:
             logger.warning(f"Graph-RAG failed: {repr(e)}")
             rag_markdown = f"> ⚠️ Graph-RAG 分析失敗：{str(e)}"
