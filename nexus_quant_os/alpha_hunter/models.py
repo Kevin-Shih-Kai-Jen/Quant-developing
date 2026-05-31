@@ -253,6 +253,33 @@ class RecursiveSupplyChainGraph:
         }
 
 
+@dataclass
+class EnrichedNode:
+    ticker: str
+    depth: int
+    llm_source: str = "unknown"
+    
+    # ── 深度掃描結果 ──
+    composite_score: Optional[float] = None      # [0, 1]
+    signal_strength: str = "NEUTRAL"
+    valuation_rating: str = "N/A"
+    fundamental_pass: bool = False
+    ai_bullish: bool = False
+    technical_confirm: bool = False
+    
+    # ── 圖論計算結果 ──
+    degree_centrality: float = 0.0
+    network_alpha_score: float = 0.0
+    spillover_delta: float = 0.0
+    
+    # ── 掃描狀態 ──
+    scan_status: str = "pending"  # pending → scanning → done / error
+    
+    # ── 前端互動用 ──
+    top_suppliers: list[str] = field(default_factory=list)
+    top_customers: list[str] = field(default_factory=list)
+    company_name: str = ""
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Tier 3: AI 分析
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

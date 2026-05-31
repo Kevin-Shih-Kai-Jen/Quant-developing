@@ -859,6 +859,8 @@ async def stream_recursive_supply_chain(
                     except Exception as e:
                         logger.exception("Recursive supply chain task failed")
                         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                    
+                    yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
                     return
 
                 # Wait briefly for new queue items or task completion
@@ -872,7 +874,161 @@ async def stream_recursive_supply_chain(
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     from fastapi.responses import StreamingResponse
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/alpha/supply-chain-radar/scan")
+async def radar_scan(request: Request):
+    body = await request.json()
+    tickers = body.get("tickers", [])
+    edges = body.get("edges", [])
+    center_ticker = body.get("center_ticker", "")
+    
+    # 【防禦機制】惡意 Payload 炸彈防護
+    if len(tickers) > 50:
+        raise HTTPException(status_code=400, detail="Too many tickers (max 50).")
+    
+    import asyncio
+    import json
+    loop = asyncio.get_running_loop()
+    q = asyncio.Queue()
+    
+    async def event_generator():
+        generator = await _get_alpha_generator()
+        yield f"data: {json.dumps({'type': 'scan_start', 'data': {'total': len(tickers), 'concurrent': 3}})}\n\n"
+        
+        semaphore = asyncio.Semaphore(3)  # 最多 3 個併發
+        from nexus_quant_os.alpha_hunter.models import EnrichedNode
+        from nexus_quant_os.alpha_hunter.radar import node_to_dict, compute_degree_centrality, compute_momentum_spillover, generate_graph_rag_analysis
+        
+        # Build enriched_nodes initialization
+        enriched_nodes: dict[str, EnrichedNode] = {}
+        for t in tickers:
+            ticker_name = t.get("ticker", "")
+            if not ticker_name: continue
+            enriched_nodes[ticker_name] = EnrichedNode(
+                ticker=ticker_name, 
+                depth=t.get("depth", 0), 
+                llm_source=t.get("llm_source", "unknown")
+            )
+
+        # Compute degree centrality first
+        centralities = compute_degree_centrality(tickers, edges)
+        for t, c in centralities.items():
+            if t in enriched_nodes:
+                enriched_nodes[t].degree_centrality = c
+        
+        async def scan_one(ticker: str):
+            async with semaphore:
+                loop.call_soon_threadsafe(q.put_nowait, {"type": "node_scoring", "data": {"ticker": ticker, "status": "scanning"}})
+                try:
+                    # 【防禦機制】殭屍任務卡死：yfinance 如果網路卡住，to_thread 永遠不回傳，導致 SSE 卡死
+                    # 必須用 wait_for 強制 45 秒 Timeout 停損
+                    signal = await asyncio.wait_for(
+                        asyncio.to_thread(generator.generate_single, ticker),
+                        timeout=45.0
+                    )
+                    node = enriched_nodes[ticker]
+                    node.composite_score = signal.composite_score
+                    node.scan_status = "done"
+                    node.company_name = signal.company_name
+                    node.signal_strength = signal.signal_strength.value
+                    node.valuation_rating = signal.scan_result.valuation_rating.value if signal.scan_result else "N/A"
+                    node.fundamental_pass = signal.fundamental_pass
+                    node.ai_bullish = signal.ai_bullish
+                    node.technical_confirm = signal.technical_confirm
+                    
+                    if signal.supply_chain:
+                        node.top_suppliers = [e.source_ticker for e in signal.supply_chain.suppliers][:3]
+                        node.top_customers = [e.target_ticker for e in signal.supply_chain.customers][:3]
+                        
+                    loop.call_soon_threadsafe(q.put_nowait, {"type": "node_scored", "data": node_to_dict(node)})
+                except Exception as e:
+                    logger.warning(f"Scan failed for {ticker}: {repr(e)}")
+                    # 一死不能全死，優雅降級為 error 狀態
+                    node = enriched_nodes[ticker]
+                    node.scan_status = "error"
+                    node.company_name = node.company_name or ticker
+                    loop.call_soon_threadsafe(q.put_nowait, {"type": "node_error", "data": node_to_dict(node)})
+        
+        # We need to extract the actual ticker string
+        ticker_names = [t.get("ticker", "") for t in tickers if t.get("ticker", "")]
+        
+        async def run_all_scans():
+            await asyncio.gather(*[scan_one(t) for t in ticker_names], return_exceptions=True)
+            
+        scan_task = asyncio.create_task(run_all_scans())
+        
+        while not scan_task.done():
+            # 【防禦機制】渣男斷線：使用者若關閉網頁，立即 cancel 任務，避免在背景白白燒掉 Gemini 預算
+            if await request.is_disconnected():
+                scan_task.cancel()
+                break
+                
+            try:
+                data = await asyncio.wait_for(q.get(), timeout=0.5)
+                yield f"data: {json.dumps(data)}\n\n"
+            except asyncio.TimeoutError:
+                pass
+                
+        # Drain remaining events
+        while not q.empty():
+            try:
+                data = q.get_nowait()
+                yield f"data: {json.dumps(data)}\n\n"
+            except asyncio.QueueEmpty:
+                break
+                
+        if scan_task.cancelled():
+            return
+            
+        # 模組 3: 動能傳染演算法
+        yield f"data: {json.dumps({'type': 'progress', 'message': '正在計算動能傳染與 Graph-RAG 分析...'})}\n\n"
+        
+        try:
+            scores = compute_momentum_spillover(enriched_nodes, edges)
+        except Exception as e:
+            logger.warning(f"Spillover computation failed: {repr(e)}")
+            scores = {t: (n.composite_score if n.composite_score is not None else 0.5) for t, n in enriched_nodes.items()}
+            # 【關鍵修復】crash 時手動把 enriched_nodes 的欄位補上
+            # 否則 node_to_dict() 會送出 network_alpha_score=0, spillover_delta=0
+            for t, n in enriched_nodes.items():
+                n.network_alpha_score = scores[t]
+                n.spillover_delta = 0.0
+        
+        # Broadcast spillover done
+        spillover_data = {t: node_to_dict(n) for t, n in enriched_nodes.items()}
+        yield f"data: {json.dumps({'type': 'spillover_done', 'data': spillover_data})}\n\n"
+        
+        # 模組 4: Graph-RAG
+        try:
+            advisor = await _get_advisor()
+            rag_markdown = await generate_graph_rag_analysis(advisor, center_ticker, enriched_nodes, edges, scores)
+        except Exception as e:
+            logger.warning(f"Graph-RAG failed: {repr(e)}")
+            rag_markdown = f"> ⚠️ Graph-RAG 分析失敗：{str(e)}"
+        yield f"data: {json.dumps({'type': 'rag_done', 'data': {'markdown': rag_markdown}})}\n\n"
+        
+        yield f"data: {json.dumps({'type': 'stream_end'})}\n\n"
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/alpha/history")

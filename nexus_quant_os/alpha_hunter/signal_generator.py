@@ -132,6 +132,11 @@ class AlphaSignalGenerator:
                 filing_texts = self._scanner._edgar.get_filing_text(
                     ticker, filing_type="10-K", sections=["mda", "risk"]
                 )
+                # 外國公司沒有 10-K，嘗試 20-F
+                if not any(filing_texts.values()):
+                    filing_texts = self._scanner._edgar.get_filing_text(
+                        ticker, filing_type="20-F", sections=["mda", "risk"]
+                    )
             except Exception as e:
                 logger.warning("Failed to get filing text for %s: %s", ticker, e)
                 

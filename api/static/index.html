@@ -2438,11 +2438,28 @@
         if (!el) return;
         el.style.display = 'block';
 
+        let returnBtnHtml = '';
+        if (sessionStorage.getItem('radar_drill_source') === 'true') {
+            returnBtnHtml = `
+            <button onclick="returnToRadar()" style="
+                display: flex; align-items: center; gap: 8px;
+                padding: 8px 16px; margin-bottom: 16px;
+                background: linear-gradient(135deg, rgba(74,144,217,0.2), rgba(74,144,217,0.05));
+                border: 1px solid rgba(74,144,217,0.4);
+                border-radius: 8px; color: #4a90d9;
+                font-size: 0.85rem; font-weight: 600;
+                cursor: pointer; transition: all 0.2s ease;
+            " onmouseover="this.style.background='rgba(74,144,217,0.3)'"
+               onmouseout="this.style.background='linear-gradient(135deg, rgba(74,144,217,0.2), rgba(74,144,217,0.05))'">
+                ⬅ 返回供應鏈雷達
+            </button>`;
+        }
+
         const rawScore = Number(s.composite_score);
         const score = isFinite(rawScore) ? rawScore : 0;
         const scoreColor = alphaGetScoreColor(score);
 
-        let html = '<div class="glass-card animate-in no-hover">';
+        let html = returnBtnHtml + '<div class="glass-card animate-in no-hover">';
 
         // Header
         html += '<div class="alpha-result-header">';
@@ -2563,6 +2580,7 @@
             html += '</div>';
             html += '<div id="alphaRecursiveStatus" style="display:none; margin-top:8px; font-size:0.8rem; color:var(--color-primary);"></div>';
             html += '<canvas id="alphaSupplyChainCanvas" width="800" height="600" style="display:none; border:1px solid var(--border-card); border-radius:8px; margin-top:16px; width:100%; background:rgba(0,0,0,0.2);"></canvas>';
+            html += '<div style="font-size:0.7rem; color:var(--text-muted); margin-top:4px; display:none;" id="alphaCanvasHint">🖱️ 滾輪縮放 · 拖曳平移 · 雙擊全覽 · 點擊節點深度掃描</div>';
             html += '<div id="alphaRecursiveCost" style="display:none; margin-top:8px; font-size:0.8rem; gap:16px; color:var(--text-muted); flex-wrap:wrap;"></div>';
             html += '</div>';
             html += '</div>';
@@ -2585,9 +2603,394 @@
         document.getElementById('alphaRecursiveControls').style.display = 'block';
     }
 
+    // --- Global State ---
     let alphaRecursiveSource = null;
     let alphaRecursiveNodes = [];
     let alphaRecursiveEdges = [];
+    let currentCenterTicker = null;
+    let nodePositions = {};
+    let currentZoomLevel = 1.0;
+    let panOffsetX = 0;
+    let panOffsetY = 0;
+    let enrichedNodeData = {};
+    let spilloverScores = {};
+    let spilloverDone = false;
+    let radarScanTotal = 0;
+    let radarScanDone = 0;
+    let lastLLMAnalysis = "";
+    let hoveredTicker = null;
+    let canvasListenersBound = false;
+    let isDragging = false;
+    let dragStartX = 0, dragStartY = 0;
+    window.isNavigating = false;
+    
+    // UX Queue & History variables
+    let sseEventQueue = [];
+    let sseProcessorActive = false;
+    
+    // --- Tooltip Logic ---
+    function getNodeColor(compositeScore, scanStatus) {
+        if (scanStatus === 'pending')  return '#555555';
+        if (scanStatus === 'scanning') return '#888888';
+        if (scanStatus === 'error')    return '#333333';
+        
+        // 【防禦機制】避免 compositeScore 為 null 時 Math.round 產出 NaN 導致 Canvas 崩潰白屏
+        if (compositeScore == null || isNaN(compositeScore)) return '#555555';
+        
+        const hue = Math.round(Math.max(0, Math.min(1, compositeScore)) * 140);
+        return `hsl(${hue}, 70%, 45%)`;
+    }
+
+    function getNodeRadius(centrality, depth) {
+        const MIN_RADIUS = 18;
+        const MAX_RADIUS = 40;
+        const c = centrality || 0;
+        if (depth === 0) return 30; // 中心點固定
+        return Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, 15 + c * 50));
+    }
+
+    function showTooltip(node, clientX, clientY) {
+        const tooltip = document.getElementById('radarTooltip');
+        if (!tooltip || !node) return;
+        
+        // 錯誤狀態專屬渲染
+        if (node.scan_status === 'error') {
+            tooltip.innerHTML = `
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                    <span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#e74c3c;"></span>
+                    <strong style="font-size:1rem;">${node.ticker}</strong>
+                    <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted);">${node.company_name || ''}</span>
+                </div>
+                <div style="padding:10px;background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:6px;font-size:0.8rem;">
+                    <div style="color:#e74c3c;font-weight:600;margin-bottom:6px;">⚠️ 掃描失敗</div>
+                    <div style="color:var(--text-muted);line-height:1.5;">
+                        資料源暫時無法取得（可能原因：API 額度超限、財報缺失、網路逾時）。<br>
+                        此節點的評分資料不可靠，請稍後重試。
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:0.78rem;margin-top:10px;">
+                    <span style="color:var(--text-muted);">中心度</span>
+                    <span>${((node.degree_centrality||0) * 100).toFixed(0)}%</span>
+                </div>
+                <div style="margin-top:12px;text-align:center;font-size:0.7rem;color:var(--text-muted);opacity:0.8;">
+                    🖱️ 點擊可重新以此為中心深度掃描
+                </div>
+            `;
+            
+            const pad = 16;
+            let left = clientX + pad;
+            let top = clientY + pad;
+            if (left + 280 > window.innerWidth) left = clientX - 280 - pad;
+            if (top + 300 > window.innerHeight) top = clientY - 300 - pad;
+            tooltip.style.left = left + 'px';
+            tooltip.style.top = top + 'px';
+            tooltip.style.display = 'block';
+            return;
+        }
+
+        // 掃描中狀態專屬渲染
+        if (node.scan_status === 'pending' || node.scan_status === 'scanning') {
+            const statusText = node.scan_status === 'pending' ? '⏳ 排隊等待中...' : '🔄 掃描進行中...';
+            const statusColor = node.scan_status === 'pending' ? '#888' : '#4a90d9';
+            tooltip.innerHTML = `
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                    <span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${statusColor};"></span>
+                    <strong style="font-size:1rem;">${node.ticker}</strong>
+                    <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted);">${node.company_name || ''}</span>
+                </div>
+                <div style="padding:10px;background:rgba(74,144,217,0.1);border:1px solid rgba(74,144,217,0.3);border-radius:6px;font-size:0.8rem;">
+                    <div style="color:${statusColor};font-weight:600;margin-bottom:6px;">${statusText}</div>
+                    <div style="color:var(--text-muted);line-height:1.5;">
+                        系統正在透過 API 取得財報與技術面資料，<br>
+                        完成後此處將顯示完整的深度分析結果。
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:0.78rem;margin-top:10px;">
+                    <span style="color:var(--text-muted);">中心度</span>
+                    <span>${((node.degree_centrality||0) * 100).toFixed(0)}%</span>
+                </div>
+                <div style="margin-top:12px;text-align:center;font-size:0.7rem;color:var(--text-muted);opacity:0.8;">
+                    🖱️ 點擊可重新以此為中心深度掃描
+                </div>
+            `;
+            
+            const pad = 16;
+            let left = clientX + pad;
+            let top = clientY + pad;
+            if (left + 280 > window.innerWidth) left = clientX - 280 - pad;
+            if (top + 300 > window.innerHeight) top = clientY - 300 - pad;
+            tooltip.style.left = left + 'px';
+            tooltip.style.top = top + 'px';
+            tooltip.style.display = 'block';
+            return;
+        }
+
+        // 【防禦機制】幽靈報錯：滑到尚未掃描完成的節點會因為 Null 噴出 JS Error
+        const scoreText = node.composite_score != null 
+            ? (node.composite_score * 100).toFixed(0) + '%' 
+            : 'N/A';
+            
+        const scoreColor = getNodeColor(node.composite_score, node.scan_status);
+        const spilloverSign = node.spillover_delta >= 0 ? '+' : '';
+        
+        let topSuppliersHtml = '';
+        if (node.top_suppliers && node.top_suppliers.length > 0) {
+            topSuppliersHtml = `
+            <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;font-size:0.75rem;">
+                <div style="color:var(--text-muted);margin-bottom:4px;">🔗 前 3 大供應商</div>
+                <div>${node.top_suppliers.join(' → ')}</div>
+            </div>`;
+        }
+        
+        let topCustomersHtml = '';
+        if (node.top_customers && node.top_customers.length > 0) {
+            topCustomersHtml = `
+            <div style="margin-top:6px;font-size:0.75rem;">
+                <div style="color:var(--text-muted);margin-bottom:4px;">🎯 前 3 大客戶</div>
+                <div>${node.top_customers.join(' → ')}</div>
+            </div>`;
+        }
+        
+        tooltip.innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                <span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${scoreColor};"></span>
+                <strong style="font-size:1rem;">${node.ticker}</strong>
+                <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted);">${node.company_name || ''}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:0.78rem;">
+                <span style="color:var(--text-muted);">基本面評分</span>
+                <span style="font-weight:600;color:${scoreColor};">${scoreText}</span>
+                <span style="color:var(--text-muted);">動能傳染分數</span>
+                <span style="font-weight:600;">${spilloverDone ? ((node.network_alpha_score||0) * 100).toFixed(0) + '%' : '⏳ 計算中...'}</span>
+                <span style="color:var(--text-muted);">傳染增量</span>
+                <span style="font-weight:600;color:${spilloverDone ? ((node.spillover_delta||0) > 0 ? '#27ae60' : '#e74c3c') : 'var(--text-muted)'};">
+                    ${spilloverDone ? spilloverSign + ((node.spillover_delta||0) * 100).toFixed(1) + '%' : '⏳ 計算中...'}
+                </span>
+                <span style="color:var(--text-muted);">信號</span>
+                <span>${node.signal_strength || 'N/A'}</span>
+                <span style="color:var(--text-muted);">估值</span>
+                <span>${node.valuation_rating || 'N/A'}</span>
+                <span style="color:var(--text-muted);">中心度</span>
+                <span>${spilloverDone ? ((node.degree_centrality||0) * 100).toFixed(0) + '%' : '⏳ 計算中...'}</span>
+            </div>
+            </div>
+            ${topSuppliersHtml}
+            ${topCustomersHtml}
+            <div style="margin-top:12px;text-align:center;font-size:0.7rem;color:var(--text-muted);opacity:0.8;">
+                🖱️ 點擊可重新以此為中心深度掃描
+            </div>
+        `;
+        
+        const pad = 16;
+        let left = clientX + pad;
+        let top = clientY + pad;
+        if (left + 280 > window.innerWidth) left = clientX - 280 - pad;
+        if (top + 300 > window.innerHeight) top = clientY - 300 - pad;
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
+        tooltip.style.display = 'block';
+    }
+
+    function hideTooltip() {
+        const tooltip = document.getElementById('radarTooltip');
+        if (tooltip) tooltip.style.display = 'none';
+    }
+
+    // --- State Management ---
+    function saveRadarState() {
+        const state = {
+            timestamp: Date.now(),
+            nodes: alphaRecursiveNodes,
+            edges: alphaRecursiveEdges,
+            centerTicker: currentCenterTicker,
+            nodePositions: {}, 
+            llmAnalysis: lastLLMAnalysis,
+            enrichedData: enrichedNodeData,
+            spilloverScores: spilloverScores,
+            spilloverDone: spilloverDone,
+            zoomLevel: currentZoomLevel,
+            panX: panOffsetX,
+            panY: panOffsetY,
+        };
+        for (const [t, p] of Object.entries(nodePositions)) {
+            state.nodePositions[t] = { x: p.x, y: p.y };
+        }
+        
+        let jsonStr = JSON.stringify(state);
+        
+        // 【防禦機制】記憶體塞爆 (QuotaExceededError)：sessionStorage 只有 5MB
+        if (jsonStr.length > 4 * 1024 * 1024) {  // > 4MB
+            state.llmAnalysis = '> [記憶體保護] 圖譜資料過大，文字分析已從快取移除。';
+            jsonStr = JSON.stringify(state);
+        }
+        
+        try {
+            sessionStorage.setItem('radar_state', jsonStr);
+        } catch (e) {
+            sessionStorage.clear(); // 清空舊垃圾後重試
+            try { sessionStorage.setItem('radar_state', jsonStr); } catch(e) {}
+        }
+    }
+
+    function restoreRadarState() {
+        const raw = sessionStorage.getItem('radar_state');
+        if (!raw) return false;
+        const state = JSON.parse(raw);
+        
+        // 【防禦機制】時空旅人過期快取：超過 1 小時強制丟棄重取
+        if (Date.now() - state.timestamp > 3600000) {
+            sessionStorage.removeItem('radar_state');
+            return false;
+        }
+        
+        alphaRecursiveNodes = state.nodes;
+        alphaRecursiveEdges = state.edges;
+        currentCenterTicker = state.centerTicker;
+        lastLLMAnalysis = state.llmAnalysis;
+        enrichedNodeData = state.enrichedData;
+        spilloverScores = state.spilloverScores;
+        spilloverDone = state.spilloverDone || false;
+        currentZoomLevel = state.zoomLevel || 1.0;
+        panOffsetX = state.panX || 0;
+        panOffsetY = state.panY || 0;
+        canvasListenersBound = false;
+        
+        const canvas = document.getElementById('alphaSupplyChainCanvas');
+        if (canvas) {
+            canvas.style.display = 'block';
+        }
+        const costEl = document.getElementById('alphaRecursiveCost');
+        if (costEl) costEl.style.display = 'flex';
+        
+        nodePositions = {};
+        for (const [ticker, pos] of Object.entries(state.nodePositions)) {
+            const nodeData = enrichedNodeData[ticker] || alphaRecursiveNodes.find(n => n.ticker === ticker);
+            nodePositions[ticker] = { 
+                x: pos.x, 
+                y: pos.y,
+                node: nodeData
+            };
+        }
+        
+        drawEnrichedCanvas();
+        
+        const status = document.getElementById('alphaRecursiveStatus');
+        if (status) {
+            status.style.display = 'block';
+            status.style.color = 'var(--color-primary)';
+            status.innerText = '⬅ 已從快取恢復雷達狀態';
+        }
+        
+        // 顯示分析面板
+        const analysisPanel = document.getElementById('radarAnalysisPanel');
+        if (analysisPanel) {
+            analysisPanel.style.display = 'block';
+            analysisPanel.innerHTML = marked.parse(lastLLMAnalysis);
+        }
+        
+        return true;
+    }
+
+    function returnToRadar() {
+        sessionStorage.removeItem('radar_drill_source');
+        const restored = restoreRadarState();
+        if (!restored) {
+            alert('快取已過期，將重新載入雷達');
+            document.getElementById('alphaResult').innerHTML = '';
+        } else {
+            // Hide single result container, show search form / radar
+            const singleEl = document.getElementById('alphaSingleResult');
+            if (singleEl) singleEl.style.display = 'none';
+        }
+    }
+
+    function drillDownToTicker(ticker) {
+        if (window.isNavigating) return;
+        window.isNavigating = true;
+        saveRadarState();
+        
+        const input = document.getElementById('alphaTickerInput');
+        if (input) input.value = ticker;
+        sessionStorage.setItem('radar_drill_source', 'true');
+        
+        // Hide ALL radar UI elements
+        const canvas = document.getElementById('alphaSupplyChainCanvas');
+        if (canvas) canvas.style.display = 'none';
+        const statusEl = document.getElementById('alphaRecursiveStatus');
+        if (statusEl) statusEl.style.display = 'none';
+        const costEl = document.getElementById('alphaRecursiveCost');
+        if (costEl) costEl.style.display = 'none';
+        const analysisPanel = document.getElementById('radarAnalysisPanel');
+        if (analysisPanel) analysisPanel.style.display = 'none';
+        const controlsEl = document.getElementById('alphaRecursiveControls');
+        if (controlsEl) controlsEl.style.display = 'none';
+        
+        // 嘗試從已掃描的快取中取得節點資料，避免重新呼叫 API
+        const cachedNode = enrichedNodeData[ticker];
+        if (cachedNode && cachedNode.scan_status === 'done' && cachedNode.composite_score != null) {
+            // 直接用快取資料渲染，不需打 API
+            const fakeScanResult = {
+                ticker: cachedNode.ticker,
+                company_name: cachedNode.company_name || ticker,
+                composite_score: cachedNode.composite_score,
+                signal_strength: cachedNode.signal_strength || 'NEUTRAL',
+                scan_result: {
+                    valuation_rating: { value: cachedNode.valuation_rating || 'N/A' }
+                },
+                fundamental_pass: cachedNode.fundamental_pass || false,
+                ai_bullish: cachedNode.ai_bullish || false,
+                technical_confirm: cachedNode.technical_confirm || false,
+                supply_chain: null
+            };
+            alphaRenderSingleResult(fakeScanResult);
+            window.isNavigating = false;
+        } else {
+            // 沒有快取資料，才走 API
+            setTimeout(() => {
+                alphaScanSingle();
+                window.isNavigating = false;
+            }, 50);
+        }
+    }
+    
+    // --- Phase 1 & 2 Execution ---
+    window.alphaGoBack = function() {
+        const historyStr = sessionStorage.getItem('radar_history');
+        if (!historyStr) return;
+        try {
+            const history = JSON.parse(historyStr);
+            if (history.length === 0) return;
+            const snapshot = history.pop();
+            sessionStorage.setItem('radar_history', JSON.stringify(history));
+            
+            // Restore snapshot
+            currentCenterTicker = snapshot.centerTicker;
+            alphaRecursiveNodes = snapshot.nodes;
+            alphaRecursiveEdges = snapshot.edges;
+            enrichedNodeData = snapshot.enriched;
+            spilloverDone = snapshot.spilloverDone;
+            radarScanDone = snapshot.radarScanDone;
+            radarScanTotal = snapshot.radarScanTotal;
+            lastLLMAnalysis = snapshot.lastLLMAnalysis;
+            
+            // Re-render
+            const headerTicker = document.querySelector('.alpha-result-ticker');
+            if (headerTicker) headerTicker.textContent = currentCenterTicker;
+            const headerCompany = document.querySelector('.alpha-result-company');
+            if (headerCompany) {
+                const cached = enrichedNodeData[currentCenterTicker];
+                headerCompany.textContent = (cached && cached.company_name) || '';
+            }
+            
+            document.getElementById('alphaRecursiveStatus').innerText = '已恢復上一頁圖表。';
+            drawEnrichedCanvas(true);
+            
+            // Update the single result HTML again to re-evaluate the back button
+            alphaRenderSingleResult(enrichedNodeData[currentCenterTicker]);
+        } catch (e) {
+            console.error('Failed to go back', e);
+        }
+    };
 
     function alphaStartRecursive(center) {
         const depth = document.getElementById('alphaRecursiveDepth').value;
@@ -2597,16 +3000,62 @@
         const canvas = document.getElementById('alphaSupplyChainCanvas');
         const cost = document.getElementById('alphaRecursiveCost');
 
+        // === History Stack Save ===
+        if (currentCenterTicker && currentCenterTicker !== center) {
+            let history = [];
+            const historyStr = sessionStorage.getItem('radar_history');
+            if (historyStr) {
+                try { history = JSON.parse(historyStr); } catch(e) {}
+            }
+            history.push({
+                centerTicker: currentCenterTicker,
+                nodes: alphaRecursiveNodes,
+                edges: alphaRecursiveEdges,
+                enriched: enrichedNodeData,
+                spilloverDone: spilloverDone,
+                radarScanDone: radarScanDone,
+                radarScanTotal: radarScanTotal,
+                lastLLMAnalysis: lastLLMAnalysis
+            });
+            sessionStorage.setItem('radar_history', JSON.stringify(history));
+        }
+        
+        currentCenterTicker = center;
+        
+        // 更新上方單一公司顯示的 Header
+        const headerTicker = document.querySelector('.alpha-result-ticker');
+        if (headerTicker) headerTicker.textContent = center;
+        const headerCompany = document.querySelector('.alpha-result-company');
+        if (headerCompany) {
+            const cached = enrichedNodeData[center];
+            headerCompany.textContent = (cached && cached.company_name) || '';
+        }
+
         controls.style.display = 'none';
         status.style.display = 'block';
-        status.innerText = '連線中...';
+        status.innerText = `🔍 正在掃描 ${center} 的供應鏈...`;
         canvas.style.display = 'block';
         cost.style.display = 'flex';
         cost.innerHTML = '';
         
         alphaRecursiveNodes = [{ ticker: center, depth: 0, llm_source: 'gemini' }];
         alphaRecursiveEdges = [];
-        drawRecursiveCanvas(center);
+        // 保留已掃描的快取資料，Phase 2 會跳過已完成的節點
+        // 但清空圖論相關的計算結果（因為更換 center 後網路結構已改變）
+        for (const t in enrichedNodeData) {
+            if (enrichedNodeData[t]) {
+                enrichedNodeData[t].network_alpha_score = 0;
+                enrichedNodeData[t].spillover_delta = 0;
+                enrichedNodeData[t].degree_centrality = 0;
+            }
+        }
+        spilloverScores = {};
+        spilloverDone = false;
+        canvasListenersBound = false;
+        currentZoomLevel = 1.0;
+        panOffsetX = 0;
+        panOffsetY = 0;
+        drawEnrichedCanvas(true);
 
         if (alphaRecursiveSource) alphaRecursiveSource.close();
 
@@ -2617,15 +3066,11 @@
             const data = JSON.parse(e.data);
             if (data.type === 'progress') {
                 status.innerText = data.message;
-            } else if (data.type === 'node_done') {
-                // We could add node to alphaRecursiveNodes here to show incrementally
-                // But it's easier to just re-render when done, or incremental render if needed.
             } else if (data.type === 'done') {
-                status.innerText = '展開完成！';
                 const graph = data.data;
                 alphaRecursiveNodes = graph.nodes;
                 alphaRecursiveEdges = graph.edges;
-                drawRecursiveCanvas(graph.center_ticker);
+                drawEnrichedCanvas(true);
                 
                 const t1 = performance.now();
                 const costData = graph.cost_summary;
@@ -2636,6 +3081,10 @@
                     <span>⏱️ 耗時: <strong>${((t1 - t0) / 1000).toFixed(1)}</strong> 秒</span>
                 `;
                 alphaRecursiveSource.close();
+                
+                // 進入 Phase 2: Async Scan
+                alphaStartRadarScan();
+                
             } else if (data.type === 'error') {
                 status.innerText = '發生錯誤: ' + data.message;
                 status.style.color = 'var(--color-sell)';
@@ -2648,132 +3097,601 @@
             alphaRecursiveSource.close();
         };
     }
+    
+    async function alphaStartRadarScan() {
+        const status = document.getElementById('alphaRecursiveStatus');
+        status.innerText = 'Phase 2: 併發深度掃描中...';
+        
+        // Start SSE Queue Processor if not active
+        if (!sseProcessorActive) {
+            sseProcessorActive = true;
+            processSseQueue();
+        }
+        
+        // Init enrichedNodeData — 保留已掃描完成的快取，只初始化尚未掃描的節點
+        const tickersToScan = [];
+        alphaRecursiveNodes.forEach(n => {
+            const existing = enrichedNodeData[n.ticker];
+            if (existing && existing.scan_status === 'done') {
+                // 已掃描完成，保留快取資料，不再重掃
+                return;
+            }
+            // 尚未掃描或狀態異常，標記為 pending
+            enrichedNodeData[n.ticker] = {
+                ticker: n.ticker,
+                depth: n.depth,
+                scan_status: 'pending',
+                degree_centrality: 0
+            };
+            tickersToScan.push(n);
+        });
+        
+        // 如果全部都已掃描完成，直接跳到 Phase 3
+        if (tickersToScan.length === 0) {
+            status.innerText = '全部節點已從快取載入，跳至動能傳染計算...';
+            // 仍需發送所有節點給後端做 spillover 計算
+            tickersToScan.push(...alphaRecursiveNodes);
+        }
+        
+        try {
+            const response = await fetch('/api/alpha/supply-chain-radar/scan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    tickers: tickersToScan,
+                    edges: alphaRecursiveEdges,
+                    center_ticker: currentCenterTicker
+                })
+            });
+            
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop(); // Keep incomplete part
+                
+                for (let line of lines) {
+                    if (line.trim()) sseEventQueue.push(line);
+                }
+            }
+            
+            // 處理 reader 結束後殘留在 buffer 中的最後事件
+            if (buffer.trim()) {
+                sseEventQueue.push(buffer.trim());
+            }
+        } catch (e) {
+            status.innerText = '掃描失敗: ' + e;
+            status.style.color = 'var(--color-sell)';
+        }
+    }
+    
+    async function processSseQueue() {
+        const status = document.getElementById('alphaRecursiveStatus');
+        while (sseProcessorActive) {
+            if (sseEventQueue.length > 0) {
+                const line = sseEventQueue.shift();
+                handleRadarSSELine(line, status);
+                // Yield to browser render thread so the UI updates visibly for every chunk
+                await new Promise(resolve => requestAnimationFrame(resolve));
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+    }
 
-    function drawRecursiveCanvas(centerTicker) {
+    function handleRadarSSELine(line, status) {
+        if (!line.startsWith('data: ')) return;
+        try {
+            const payload = JSON.parse(line.substring(6));
+            if (payload.type === 'scan_start') {
+                radarScanTotal = payload.data.total;
+                radarScanDone = 0;
+                status.innerText = `Phase 2: 開始掃描 ${radarScanTotal} 家公司（預估 ${Math.ceil(radarScanTotal * 15 / 3 / 60)}~${Math.ceil(radarScanTotal * 45 / 3 / 60)} 分鐘）...`;
+            } else if (payload.type === 'node_scoring') {
+                const t = payload.data.ticker;
+                // 不覆蓋已完成的快取節點
+                if (enrichedNodeData[t] && enrichedNodeData[t].scan_status !== 'done') {
+                    enrichedNodeData[t].scan_status = 'scanning';
+                }
+                drawEnrichedCanvas();
+            } else if (payload.type === 'node_scored') {
+                const n = payload.data;
+                enrichedNodeData[n.ticker] = n;
+                radarScanDone++;
+                status.innerText = `Phase 2: 掃描中 ${radarScanDone}/${radarScanTotal}（每家約 15-45 秒）...`;
+                drawEnrichedCanvas();
+            } else if (payload.type === 'node_error') {
+                const n = payload.data;
+                enrichedNodeData[n.ticker] = n;
+                radarScanDone++;
+                status.innerText = `Phase 2: 掃描中 ${radarScanDone}/${radarScanTotal}（每家約 15-45 秒）...`;
+                drawEnrichedCanvas();
+            } else if (payload.type === 'progress') {
+                status.innerText = payload.message;
+            } else if (payload.type === 'spillover_done') {
+                // 合併而非覆蓋：保留前端已有但後端未處理的快取節點
+                const serverData = payload.data;
+                for (const [t, nodeData] of Object.entries(serverData)) {
+                    enrichedNodeData[t] = nodeData;
+                }
+                spilloverDone = true;
+                drawEnrichedCanvas();
+            } else if (payload.type === 'rag_done') {
+                lastLLMAnalysis = payload.data.markdown;
+                status.innerText = '掃描與分析完成！';
+                let analysisPanel = document.getElementById('radarAnalysisPanel');
+                if (!analysisPanel) {
+                    analysisPanel = document.createElement('div');
+                    analysisPanel.id = 'radarAnalysisPanel';
+                    analysisPanel.style = 'margin-top:16px; padding:16px; border:1px solid var(--border-card); border-radius:8px; background:rgba(0,0,0,0.2); font-size:0.85rem;';
+                    document.getElementById('alphaRecursiveStatus').parentNode.appendChild(analysisPanel);
+                }
+                analysisPanel.style.display = 'block';
+                analysisPanel.innerHTML = marked.parse(lastLLMAnalysis);
+            }
+        } catch (e) { /* ignore JSON parse errors on partial data */ }
+    }
+
+    function drawEnrichedCanvas(recalculateLayout = false) {
         const canvas = document.getElementById('alphaSupplyChainCanvas');
         if (!canvas) return;
+        setupCanvasInteraction();
+
+        // Show hint text
+        const hint = document.getElementById('alphaCanvasHint');
+        if (hint) hint.style.display = 'block';
+
+        // Dynamic resolution: match container width
+        const container = canvas.parentElement;
+        const dpr = window.devicePixelRatio || 1;
+        const displayW = container.clientWidth || 800;
+        const displayH = Math.max(500, displayW * 0.65);
+        canvas.width = displayW * dpr;
+        canvas.height = displayH * dpr;
+        canvas.style.width = displayW + 'px';
+        canvas.style.height = displayH + 'px';
+
         const ctx = canvas.getContext('2d');
-        const w = canvas.width;
-        const h = canvas.height;
-        ctx.clearRect(0, 0, w, h);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // Reset to DPR scale
 
-        const centerX = w / 2;
-        const centerY = h / 2;
-        const radii = [0, 120, 220, 320];
+        ctx.clearRect(0, 0, displayW, displayH);
 
-        // Layout
-        const layers = {};
-        alphaRecursiveNodes.forEach(n => {
-            if (!layers[n.depth]) layers[n.depth] = [];
-            layers[n.depth].push(n);
-        });
+        const centerX = displayW / 2;
+        const centerY = displayH / 2;
+        const minDim = Math.min(displayW, displayH);
+        const radii = [0, minDim * 0.18, minDim * 0.33, minDim * 0.46];
 
-        const pos = {};
-        Object.keys(layers).forEach(depthStr => {
-            const depth = parseInt(depthStr);
-            const nodes = layers[depth];
-            if (depth === 0) {
-                pos[nodes[0].ticker] = { x: centerX, y: centerY, node: nodes[0] };
+        // Layout calculation (only when asked to)
+        if (recalculateLayout || Object.keys(nodePositions).length === 0) {
+            const layers = {};
+            alphaRecursiveNodes.forEach(n => {
+                if (!layers[n.depth]) layers[n.depth] = [];
+                layers[n.depth].push(n);
+            });
+
+            nodePositions = {};
+            Object.keys(layers).forEach(depthStr => {
+                const depth = parseInt(depthStr);
+                const nodes = layers[depth];
+                if (depth === 0) {
+                    const nodeData = enrichedNodeData[nodes[0].ticker] || nodes[0];
+                    nodePositions[nodes[0].ticker] = { x: centerX, y: centerY, node: nodeData };
+                } else {
+                    const r = radii[depth] || (minDim * 0.46 + depth * 40);
+                    const step = (2 * Math.PI) / nodes.length;
+                    nodes.forEach((n, i) => {
+                        const angle = step * i - Math.PI / 2;
+                        const nodeData = enrichedNodeData[n.ticker] || n;
+                        nodePositions[n.ticker] = {
+                            x: centerX + r * Math.cos(angle),
+                            y: centerY + r * Math.sin(angle),
+                            node: nodeData
+                        };
+                    });
+                }
+            });
+
+            // Auto-fit: calculate zoom to fit all nodes with padding
+            if (Object.keys(nodePositions).length > 1) {
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                for (const p of Object.values(nodePositions)) {
+                    minX = Math.min(minX, p.x - 50);
+                    maxX = Math.max(maxX, p.x + 50);
+                    minY = Math.min(minY, p.y - 50);
+                    maxY = Math.max(maxY, p.y + 50);
+                }
+                const graphW = maxX - minX;
+                const graphH = maxY - minY;
+                if (graphW > 0 && graphH > 0) {
+                    currentZoomLevel = Math.min(displayW / graphW, displayH / graphH) * 0.85;
+                    currentZoomLevel = Math.max(0.3, Math.min(2.0, currentZoomLevel));
+                    panOffsetX = (displayW - graphW * currentZoomLevel) / 2 - minX * currentZoomLevel;
+                    panOffsetY = (displayH - graphH * currentZoomLevel) / 2 - minY * currentZoomLevel;
+                }
             } else {
-                const r = radii[depth];
-                const step = (2 * Math.PI) / nodes.length;
-                nodes.forEach((n, i) => {
-                    const angle = step * i - Math.PI / 2;
-                    pos[n.ticker] = {
-                        x: centerX + r * Math.cos(angle),
-                        y: centerY + r * Math.sin(angle),
-                        node: n
-                    };
-                });
+                currentZoomLevel = 1.0;
+                panOffsetX = 0;
+                panOffsetY = 0;
             }
-        });
-
-        // Draw rings
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-        ctx.lineWidth = 1;
-        for (let i = 1; i < radii.length; i++) {
-            if (layers[i]) {
-                ctx.beginPath();
-                ctx.arc(centerX, centerY, radii[i], 0, 2 * Math.PI);
-                ctx.stroke();
+        } else {
+            // Update node data inside positions
+            for (let t in nodePositions) {
+                if (enrichedNodeData[t]) nodePositions[t].node = enrichedNodeData[t];
             }
         }
 
-        // Draw edges
-        alphaRecursiveEdges.forEach(e => {
-            const p1 = pos[e.source_ticker];
-            const p2 = pos[e.target_ticker];
-            if (!p1 || !p2) return;
+        // Apply pan/zoom transform
+        ctx.save();
+        ctx.translate(panOffsetX, panOffsetY);
+        ctx.scale(currentZoomLevel, currentZoomLevel);
+
+        // Draw rings
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.lineWidth = 1 / currentZoomLevel;
+        for (let i = 1; i < radii.length; i++) {
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radii[i], 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+
+        // Helper: draw arrow
+        const drawArrow = (x1, y1, x2, y2, radius2, color, lineWidth, dashed) => {
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < radius2) return;
+            
+            const ratio = (dist - radius2 - 4) / dist;
+            const endX = x1 + dx * ratio;
+            const endY = y1 + dy * ratio;
             
             ctx.beginPath();
-            ctx.moveTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(endX, endY);
             
-            if (e.confidence >= 0.7) {
-                ctx.setLineDash([]);
-                ctx.lineWidth = Math.max(1, (e.revenue_pct || 0) * 10);
-            } else {
+            if (dashed) {
                 ctx.setLineDash([5, 5]);
-                ctx.lineWidth = 1;
+            } else {
+                ctx.setLineDash([]);
             }
             
-            // color by relation
-            if (e.relation === 'SUPPLIER') ctx.strokeStyle = 'rgba(74, 144, 217, 0.4)'; // blue
-            else if (e.relation === 'CUSTOMER') ctx.strokeStyle = 'rgba(39, 174, 96, 0.4)'; // green
-            else if (e.relation === 'COMPETITOR') ctx.strokeStyle = 'rgba(231, 76, 60, 0.4)'; // red
-            else ctx.strokeStyle = 'rgba(243, 156, 18, 0.4)'; // yellow
-
+            ctx.strokeStyle = color;
+            ctx.lineWidth = lineWidth;
             ctx.stroke();
             ctx.setLineDash([]);
+            
+            if (!dashed) {
+                const angle = Math.atan2(dy, dx);
+                const headlen = 10 + lineWidth;
+                ctx.beginPath();
+                ctx.moveTo(endX, endY);
+                ctx.lineTo(endX - headlen * Math.cos(angle - Math.PI / 6), endY - headlen * Math.sin(angle - Math.PI / 6));
+                ctx.lineTo(endX - headlen * Math.cos(angle + Math.PI / 6), endY - headlen * Math.sin(angle + Math.PI / 6));
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+            }
+        };
+
+        // Draw edges
+        alphaRecursiveEdges.forEach(e => {
+            const p1 = nodePositions[e.source_ticker];
+            const p2 = nodePositions[e.target_ticker];
+            if (!p1 || !p2) return;
+            
+            const n1 = p1.node;
+            const n2 = p2.node;
+            const r2 = getNodeRadius(n2.degree_centrality, n2.depth);
+            const r1 = getNodeRadius(n1.degree_centrality, n1.depth);
+            
+            const baseLineWidth = Math.max(1.5, Math.min(8, (e.revenue_pct || 0.1) * 20));
+            
+            if (e.relation === 'SUPPLIER') {
+                drawArrow(p2.x, p2.y, p1.x, p1.y, r1, 'rgba(39, 174, 96, 0.4)', baseLineWidth, false);
+            } else if (e.relation === 'CUSTOMER') {
+                drawArrow(p1.x, p1.y, p2.x, p2.y, r2, 'rgba(39, 174, 96, 0.4)', baseLineWidth, false);
+            } else if (e.relation === 'COMPETITOR') {
+                drawArrow(p1.x, p1.y, p2.x, p2.y, r2, 'rgba(231, 76, 60, 0.4)', 2, true);
+            } else {
+                drawArrow(p1.x, p1.y, p2.x, p2.y, r2, 'rgba(243, 156, 18, 0.4)', baseLineWidth, false);
+                drawArrow(p2.x, p2.y, p1.x, p1.y, r1, 'rgba(243, 156, 18, 0.4)', baseLineWidth, false);
+            }
         });
 
         // Draw nodes
-        Object.values(pos).forEach(p => {
+        Object.values(nodePositions).forEach(p => {
             const n = p.node;
+            const radius = getNodeRadius(n.degree_centrality, n.depth);
+            
             ctx.beginPath();
-            ctx.arc(p.x, p.y, n.depth === 0 ? 30 : 20, 0, 2 * Math.PI);
+            ctx.arc(p.x, p.y, radius, 0, 2 * Math.PI);
             
-            if (n.depth === 0) ctx.fillStyle = '#fff';
-            else if (n.llm_source === 'not_expanded') ctx.fillStyle = '#666';
-            else ctx.fillStyle = '#444';
-            
+            const color = getNodeColor(n.composite_score, n.scan_status || 'pending');
+            ctx.fillStyle = color;
             ctx.fill();
-            if (n.llm_source === 'not_expanded') {
+            
+            // stroke
+            ctx.strokeStyle = n.depth === 0 ? '#fff' : 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = n.depth === 0 ? 3 : 1;
+            ctx.stroke();
+
+            // Hover glow effect
+            if (n.ticker === hoveredTicker) {
+                ctx.save();
+                ctx.shadowColor = '#fff';
+                ctx.shadowBlur = 15;
                 ctx.strokeStyle = '#fff';
-                ctx.setLineDash([2, 2]);
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 3;
                 ctx.stroke();
-                ctx.setLineDash([]);
+                ctx.restore();
             }
 
-            // text
-            ctx.fillStyle = n.depth === 0 ? '#000' : '#fff';
-            ctx.font = n.depth === 0 ? 'bold 14px sans-serif' : '12px sans-serif';
+            // Ticker text (top)
+            ctx.fillStyle = '#fff';
+            ctx.font = (radius > 25) ? 'bold 14px sans-serif' : '11px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(n.ticker, p.x, p.y);
+            const labelY = (n.company_name && radius > 18) ? p.y - 6 : p.y;
+            ctx.fillText(n.ticker, p.x, labelY);
+            
+            // Score text (middle)
+            if (n.composite_score != null && radius > 22) {
+                ctx.font = '9px sans-serif';
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.fillText((n.composite_score * 100).toFixed(0) + '%', p.x, p.y + 8);
+            }
 
-            // Icon
-            if (n.depth > 0) {
-                let icon = '';
-                if (n.llm_source === 'gemini' || n.llm_source === 'gemini_fallback') icon = '🌐';
-                else if (n.llm_source === 'ollama') icon = '🏠';
-                else if (n.llm_source === 'cache') icon = '💾';
-                if (icon) {
-                    ctx.font = '10px sans-serif';
-                    ctx.fillText(icon, p.x + 12, p.y - 12);
+            // Company name (bottom, abbreviated)
+            if (n.company_name && radius > 18) {
+                ctx.font = '9px sans-serif';
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                let shortName = n.company_name;
+                if (shortName.length > 12) shortName = shortName.substring(0, 11) + '…';
+                ctx.fillText(shortName, p.x, p.y + (n.composite_score != null ? 20 : 12));
+            }
+        });
+
+        // End pan/zoom transform
+        ctx.restore();
+
+        // Draw Legend (screen coordinates — not affected by pan/zoom)
+        drawCanvasLegend(ctx, displayW, displayH);
+    }
+
+    function drawCanvasLegend(ctx, w, h) {
+        ctx.save();
+        const legendW = 160;
+        const legendH = 200;
+        const legendX = w - legendW - 16;
+        const legendY = h - legendH - 16;
+
+        ctx.fillStyle = 'rgba(20, 20, 20, 0.75)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(legendX, legendY, legendW, legendH, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('📊 圖例', legendX + 12, legendY + 10);
+
+        const items = [
+            { text: '高分 (>70%)', color: getNodeColor(0.8, 'done') },
+            { text: '中等 (40-70%)', color: getNodeColor(0.5, 'done') },
+            { text: '低分 (<40%)', color: getNodeColor(0.2, 'done') },
+            { text: '未掃描', color: '#555555' }
+        ];
+
+        let startY = legendY + 34;
+        items.forEach((item, i) => {
+            const y = startY + i * 20;
+            ctx.beginPath();
+            ctx.arc(legendX + 20, y + 6, 6, 0, Math.PI * 2);
+            ctx.fillStyle = item.color;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.stroke();
+            ctx.fillStyle = '#ccc';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(item.text, legendX + 34, y);
+        });
+
+        startY += items.length * 20 + 8;
+        
+        const edgeItems = [
+            { text: '供應/客戶 (金流)', color: 'rgba(39, 174, 96, 0.8)', dashed: false },
+            { text: '合作夥伴 (雙向)', color: 'rgba(243, 156, 18, 0.8)', dashed: false },
+            { text: '競爭對手', color: 'rgba(231, 76, 60, 0.8)', dashed: true }
+        ];
+
+        edgeItems.forEach((line, i) => {
+            const y = startY + i * 20;
+            ctx.beginPath();
+            ctx.moveTo(legendX + 12, y + 6);
+            ctx.lineTo(legendX + 28, y + 6);
+            ctx.strokeStyle = line.color;
+            ctx.lineWidth = 2;
+            if (line.dashed) ctx.setLineDash([4, 3]);
+            else ctx.setLineDash([]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = '#ccc';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(line.text, legendX + 34, y);
+        });
+
+        ctx.fillStyle = '#999';
+        ctx.font = '10px sans-serif';
+        ctx.fillText('⊕ 節點大小 = 網路中心度', legendX + 12, startY + edgeItems.length * 20 + 6);
+
+        ctx.restore();
+    }
+
+    // --- Canvas Interaction: Hover / Click / Zoom / Pan ---
+    function setupCanvasInteraction() {
+        const canvas = document.getElementById('alphaSupplyChainCanvas');
+        if (!canvas || canvasListenersBound) return;
+        canvasListenersBound = true;
+
+        // Helper: convert screen coords to world coords (inverse pan/zoom)
+        function screenToWorld(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const sx = clientX - rect.left;
+            const sy = clientY - rect.top;
+            return {
+                x: (sx - panOffsetX) / currentZoomLevel,
+                y: (sy - panOffsetY) / currentZoomLevel
+            };
+        }
+
+        // Helper: find node at world position
+        function findNodeAt(wx, wy) {
+            for (const [ticker, p] of Object.entries(nodePositions)) {
+                const n = p.node;
+                const r = getNodeRadius(n.degree_centrality, n.depth);
+                const dx = wx - p.x;
+                const dy = wy - p.y;
+                if (dx * dx + dy * dy <= r * r) {
+                    return { ticker, node: n };
                 }
+            }
+            return null;
+        }
+
+        // Mousemove: hover detection
+        canvas.addEventListener('mousemove', function(e) {
+            if (isDragging) return; // Don't hover while dragging
+            const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+            const hit = findNodeAt(wx, wy);
+            
+            const newHovered = hit ? hit.node.ticker : null;
+            if (hoveredTicker !== newHovered) {
+                hoveredTicker = newHovered;
+                drawEnrichedCanvas();
+            }
+            
+            if (hit) {
+                canvas.style.cursor = 'pointer';
+                showTooltip(hit.node, e.clientX, e.clientY);
+            } else {
+                canvas.style.cursor = isDragging ? 'grabbing' : 'grab';
+                hideTooltip();
+            }
+        });
+
+        canvas.addEventListener('mouseout', function() {
+            if (hoveredTicker) {
+                hoveredTicker = null;
+                drawEnrichedCanvas();
+            }
+            hideTooltip();
+        });
+
+        // Click: drill down or re-center recursive
+        canvas.addEventListener('click', function(e) {
+            if (isDragging) return;
+            const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+            const hit = findNodeAt(wx, wy);
+            
+            if (hit) {
+                hideTooltip();
+                if (hit.ticker === currentCenterTicker) {
+                    drillDownToTicker(hit.ticker);
+                } else {
+                    document.getElementById('alphaTickerInput').value = hit.ticker;
+                    alphaStartRecursive(hit.ticker);
+                }
+            }
+        });
+
+        // Double-click: fit all nodes into view
+        canvas.addEventListener('dblclick', function(e) {
+            e.preventDefault();
+            if (Object.keys(nodePositions).length === 0) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const dispW = rect.width;
+            const dispH = rect.height;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of Object.values(nodePositions)) {
+                minX = Math.min(minX, p.x - 50);
+                maxX = Math.max(maxX, p.x + 50);
+                minY = Math.min(minY, p.y - 50);
+                maxY = Math.max(maxY, p.y + 50);
+            }
+            const graphW = maxX - minX;
+            const graphH = maxY - minY;
+            if (graphW <= 0 || graphH <= 0) return;
+
+            currentZoomLevel = Math.min(dispW / graphW, dispH / graphH) * 0.85;
+            currentZoomLevel = Math.max(0.3, Math.min(5.0, currentZoomLevel));
+            panOffsetX = (dispW - graphW * currentZoomLevel) / 2 - minX * currentZoomLevel;
+            panOffsetY = (dispH - graphH * currentZoomLevel) / 2 - minY * currentZoomLevel;
+
+            drawEnrichedCanvas();
+        });
+
+        // Wheel: zoom toward cursor
+        canvas.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+
+            const zoomFactor = Math.pow(0.999, e.deltaY);
+            const newZoom = Math.max(0.2, Math.min(6.0, currentZoomLevel * zoomFactor));
+
+            panOffsetX = mx - (mx - panOffsetX) * (newZoom / currentZoomLevel);
+            panOffsetY = my - (my - panOffsetY) * (newZoom / currentZoomLevel);
+            currentZoomLevel = newZoom;
+
+            drawEnrichedCanvas();
+        }, { passive: false });
+
+        // Mousedown: start drag (only if not on a node)
+        canvas.addEventListener('mousedown', function(e) {
+            const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+            if (findNodeAt(wx, wy)) return; // Don't drag if clicking a node
+            isDragging = true;
+            dragStartX = e.clientX - panOffsetX;
+            dragStartY = e.clientY - panOffsetY;
+            canvas.style.cursor = 'grabbing';
+        });
+
+        // Global mousemove/mouseup for drag
+        window.addEventListener('mousemove', function(e) {
+            if (!isDragging) return;
+            panOffsetX = e.clientX - dragStartX;
+            panOffsetY = e.clientY - dragStartY;
+            hideTooltip();
+            drawEnrichedCanvas();
+        });
+
+        window.addEventListener('mouseup', function() {
+            if (isDragging) {
+                isDragging = false;
+                const canvas = document.getElementById('alphaSupplyChainCanvas');
+                if (canvas) canvas.style.cursor = 'grab';
             }
         });
     }
 
-
     function alphaDetailFromTable(ticker) {
-        if (!ticker) return;
-        const input = document.getElementById('alphaTickerInput');
-        if (input) input.value = ticker;
-        alphaScanSingle();
+        drillDownToTicker(ticker);
     }
     </script>
+    <div id="radarTooltip" style="position:fixed;display:none;background:rgba(20,20,20,0.95);border:1px solid #333;border-radius:8px;padding:12px;color:#fff;pointer-events:none;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(8px);width:280px;font-family:sans-serif;"></div>
 </body>
 </html>

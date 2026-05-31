@@ -411,7 +411,7 @@ class SECEdgarClient:
 
             for item in items:
                 form = item.get("form")
-                if form not in ("10-K", "10-Q"):
+                if form not in ("10-K", "10-Q", "20-F", "6-K"):
                     continue
                 end_date = item.get("end")
                 if not end_date:
