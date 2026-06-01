@@ -417,7 +417,7 @@ async def run_pipeline():
                 ),
             )
         regime_blended = _allocator.blend(
-            moe_weights=safe_weights,
+            moe_weights=optimized_weights,
             regime_label=firewall_result.hmm_regime_label,
             regime_confidence=max(
                 firewall_result.hmm_bear_prob,
@@ -452,12 +452,16 @@ async def run_pipeline():
         else:
             vix_5ma = vix_proxy
         
-        final_weights = _smoother.smooth(
+        smoothed_weights = _smoother.smooth(
             regime_blended,
             expert_utilization=expert_util,
             vix_value=vix_proxy,
             vix_5ma=vix_5ma,
         )
+        
+        # --- v2.0 Phase 2.5: Apply Firewall Scaling LAST! ---
+        # If firewall dictates 0.0 scale, we execute 0.0. The smoother retains the 'ideal' 1.0 portfolio internally.
+        final_weights = smoothed_weights * firewall_result.scale_factor
 
         # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
         weight_check = check_weight_sanity(
