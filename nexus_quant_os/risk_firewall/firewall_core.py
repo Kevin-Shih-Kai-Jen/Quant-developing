@@ -205,6 +205,17 @@ class IntelligentRiskFirewall:
         """Restore threading.Lock after deserialization."""
         self.__dict__.update(state)
         self._lock = threading.Lock()
+        
+        # ── Backward Compatibility Patch for legacy Multi-market support ──
+        if hasattr(self, "_is_fitted") and isinstance(self._is_fitted, bool):
+            is_fitted_val = self._is_fitted
+            self._is_fitted = {"US": is_fitted_val}
+            
+        if hasattr(self, "hmm_detector") and not hasattr(self, "hmm_detectors"):
+            self.hmm_detectors = {"US": getattr(self, "hmm_detector")}
+            
+        if hasattr(self, "ood_detector") and not hasattr(self, "ood_detectors"):
+            self.ood_detectors = {"US": getattr(self, "ood_detector")}
 
     @classmethod
     def from_configs(
