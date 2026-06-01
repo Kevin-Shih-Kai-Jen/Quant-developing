@@ -288,9 +288,25 @@ class TWSEClient:
     def get_filing_text(
         self, ticker: str, filing_type: str = "年報", sections: list[str] | None = None
     ) -> dict[str, str]:
-        """台股的文字擷取將在 Phase 2 (mops_scraper.py) 實作，這裡提供佔位符。"""
-        # TODO: Phase 2 實作 MOPS 爬蟲
-        return {}
+        """抓取台股財報或法說會相關文字。
+        
+        與 MOPSScraper 整合，若抓取失敗或 Timeout，優雅回傳空資料避免阻礙核心流程。
+        """
+        try:
+            from .ticker_resolver import TickerResolver
+            from .mops_scraper import MOPSScraper
+            
+            stock_id = TickerResolver.to_canonical(ticker).replace(".TW", "")
+            scraper = MOPSScraper()
+            
+            text = scraper.get_investor_conference_text(stock_id)
+            if text:
+                return {"mda": text, "risk_factors": ""}
+            else:
+                return {"mda": "", "risk_factors": ""}
+        except Exception as e:
+            logger.warning("MOPS Unavailable [%s]: %s", ticker, e)
+            return {"mda": "", "risk_factors": ""}
 
     def get_monthly_revenue(self, ticker: str, months: int = 12) -> pd.DataFrame:
         """台股專屬高頻動能指標：取得月營收。"""

@@ -32,3 +32,4 @@ pytest>=7.0               # Test framework
 pytest-mock>=3.0           # Mock support for pytest
 tenacity>=8.0              # Retry with exponential backoff
 google-antigravity
+google-generativeai>=0.5.2 # Gemini Multimodal Native SDK

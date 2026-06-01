@@ -48,8 +48,9 @@ PROVIDE YOUR ANALYSIS AS A JSON OBJECT with exactly these fields:
 }}
 
 Output ONLY valid JSON. No markdown, no explanation.
+{tw_context}
 
---- MD&A EXCERPT ---
+--- MD&A EXCERPT (OR ATTACHED PDF DATA) ---
 {mda_text}
 
 --- RISK FACTORS EXCERPT ---
@@ -125,69 +126,137 @@ Output ONLY valid JSON. No markdown, no explanation.
         if not self._api_key:
             return default_analysis
             
-        mda_trunc = mda_text[:LLM_MAX_INPUT_CHARS]
-        risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
+        from .ticker_resolver import TickerResolver
+        market = TickerResolver.detect_market(ticker)
+        
+        tw_context = ""
+        if market == "TW":
+            from .tw_news_fetcher import TWNewsFetcher
+            tw_context = (
+                "\n" + TWNewsFetcher.TW_MARKET_CONTEXT + "\n"
+                "CRITICAL OVERRIDE: 分析台灣股票時，若遇到『長老吃筍』，請翻譯為『政府八大行庫停損』；"
+                "『亮燈』或『亮紅燈』在股價或業績語境中代表『漲停板 Maximum Bullish』，切勿當作負面辭彙。\n"
+            )
+
         news_text = "\n".join(recent_news) if recent_news else "None"
         news_trunc = news_text[:LLM_MAX_INPUT_CHARS]
 
+        # ── 檢查是否為 PDF 檔案 (多模態支援) ──
+        is_pdf = isinstance(mda_text, str) and mda_text.lower().endswith(".pdf") and os.path.exists(mda_text)
+        
+        if is_pdf:
+            mda_trunc = f"Attached PDF document: {os.path.basename(mda_text)}"
+            risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
+        else:
+            mda_trunc = mda_text[:LLM_MAX_INPUT_CHARS]
+            risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
+
         prompt = self._ANALYSIS_PROMPT.format(
             ticker=ticker,
+            tw_context=tw_context,
             mda_text=mda_trunc,
             risk_text=risk_trunc,
             news_text=news_trunc
         )
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": LLM_TEMPERATURE}
-        }
-
         result_json = None
-        for attempt in range(self._max_retries):
-            # 簡單的 local rate limit (Gemini API calls should be spaced out)
-            with self._rate_lock:
-                now = time.monotonic()
-                if now - self._last_request_time < 4.0:
-                    time.sleep(4.0 - (now - self._last_request_time))
-                self._last_request_time = time.monotonic()
-
+        
+        if is_pdf:
+            # ── 多模態 PDF 解析流程 (使用 google.generativeai SDK) ──
             try:
-                resp = self._session.post(url, json=payload, timeout=self._timeout)
-                if resp.status_code == 429:
-                    if attempt == 0:
-                        # 第一次 429：短暫等待後重試一次
-                        logger.warning("Gemini 429, short backoff 5s (attempt 1)")
-                        time.sleep(5)
-                        continue
-                    else:
-                        # 第二次 429：放棄，回傳 neutral（不值得再等）
-                        logger.warning("Gemini 429 persists, skipping AI for %s", ticker)
-                        break
-                resp.raise_for_status()
-                data = resp.json()
+                import google.generativeai as genai
+                genai.configure(api_key=self._api_key)
+                # 使用 Gemini 1.5 Pro (Multimodal)
+                model_obj = genai.GenerativeModel("gemini-1.5-pro")
                 
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-                text = text.strip()
-                # 防呆：用 Regex 從 ```json...``` 或 ```...``` 中提取 JSON
+                with self._rate_lock:
+                    now = time.monotonic()
+                    if now - self._last_request_time < 4.0:
+                        time.sleep(4.0 - (now - self._last_request_time))
+                    self._last_request_time = time.monotonic()
+
+                logger.info("Uploading PDF to Gemini Vision: %s", mda_text)
+                pdf_file = genai.upload_file(path=mda_text)
+                
+                # 提示詞中加入特別指示
+                multimodal_prompt = (
+                    f"{prompt}\n\n這是一份法說會簡報 PDF，請直接讀取裡面的圖表與文字，並總結出："
+                    "1. 下季營收指引、2. 毛利率預測、3. 資本支出。"
+                )
+                
+                resp = model_obj.generate_content([multimodal_prompt, pdf_file])
+                text = resp.text.strip()
+                
+                # 分析完畢後刪除雲端檔案避免佔用配額
+                try:
+                    pdf_file.delete()
+                except Exception as e:
+                    logger.warning("Failed to delete PDF from Gemini: %s", e)
+                
+                # 解析 JSON
                 import re as _re
                 md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
                 if md_match:
                     text = md_match.group(1).strip()
                 else:
-                    # 沒有 Markdown 包裹，嘗試找第一個 { 到最後一個 }
                     brace_start = text.find('{')
                     brace_end = text.rfind('}')
                     if brace_start != -1 and brace_end > brace_start:
                         text = text[brace_start:brace_end + 1]
                 result_json = json.loads(text)
-                break
-            except requests.RequestException as e:
-                logger.warning("AIAnalyst request failed (attempt %d): %s", attempt+1, e)
-                time.sleep(2 ** attempt)
-            except (KeyError, IndexError, ValueError) as e:
-                logger.warning("AIAnalyst parse failed: %s", e)
-                break
+                
+            except Exception as e:
+                logger.warning("Gemini Multimodal Vision failed for %s: %s", ticker, e)
+                # Fallback 到沒有 PDF 的狀態
+                pass
+                
+        if not is_pdf or not result_json:
+            # ── 純文字解析流程 (使用 REST API) ──
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": LLM_TEMPERATURE}
+            }
+
+            for attempt in range(self._max_retries):
+                with self._rate_lock:
+                    now = time.monotonic()
+                    if now - self._last_request_time < 4.0:
+                        time.sleep(4.0 - (now - self._last_request_time))
+                    self._last_request_time = time.monotonic()
+
+                try:
+                    resp = self._session.post(url, json=payload, timeout=self._timeout)
+                    if resp.status_code == 429:
+                        if attempt == 0:
+                            logger.warning("Gemini 429, short backoff 5s (attempt 1)")
+                            time.sleep(5)
+                            continue
+                        else:
+                            logger.warning("Gemini 429 persists, skipping AI for %s", ticker)
+                            break
+                    resp.raise_for_status()
+                    data = resp.json()
+                    
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    text = text.strip()
+                    import re as _re
+                    md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
+                    if md_match:
+                        text = md_match.group(1).strip()
+                    else:
+                        brace_start = text.find('{')
+                        brace_end = text.rfind('}')
+                        if brace_start != -1 and brace_end > brace_start:
+                            text = text[brace_start:brace_end + 1]
+                    result_json = json.loads(text)
+                    break
+                except requests.RequestException as e:
+                    logger.warning("AIAnalyst request failed (attempt %d): %s", attempt+1, e)
+                    time.sleep(2 ** attempt)
+                except (KeyError, IndexError, ValueError) as e:
+                    logger.warning("AIAnalyst parse failed: %s", e)
+                    break
                 
         if not result_json:
             return default_analysis
