@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .models import FinancialStatement, ScanResult, ValuationRating
-from .sec_edgar import SECEdgarClient
+from .interfaces import FinancialDataClient, MarketConfig, MARKET_CONFIGS
+from .ticker_resolver import TickerResolver
 from ._constants import (
     MIN_REVENUE_GROWTH_YOY, MIN_FCF_YIELD, MAX_DEBT_TO_EQUITY,
     VALUATION_PEER_MULTIPLIER, DEFAULT_SCAN_UNIVERSE,
@@ -31,15 +32,26 @@ class FinancialScanner:
 
     def __init__(
         self,
-        edgar_client: Optional[SECEdgarClient] = None,
+        data_client: Optional[FinancialDataClient] = None,
         universe: Optional[list[str]] = None,
+        market_config: Optional[MarketConfig] = None,
+        **kwargs,
     ) -> None:
         """
         Args:
-            edgar_client: SEC EDGAR 客戶端。不傳就自動建立。
+            data_client: 市場資料客戶端。不傳就自動建立。
             universe: 掃描範圍 ticker 列表。不傳用 DEFAULT_SCAN_UNIVERSE。
         """
-        self._edgar = edgar_client or SECEdgarClient()
+        if "edgar_client" in kwargs and data_client is None:
+            data_client = kwargs["edgar_client"]
+
+        if data_client is not None:
+            self._client = data_client
+        else:
+            # 向後相容：不傳就用美股 SECEdgarClient
+            from .sec_edgar import SECEdgarClient
+            self._client = SECEdgarClient()
+        self._market_config = market_config or MARKET_CONFIGS["US"]
         self._universe = universe or list(DEFAULT_SCAN_UNIVERSE)
 
     def scan_universe(self) -> list[ScanResult]:
@@ -72,19 +84,29 @@ class FinancialScanner:
 
     def scan_single(self, ticker: str) -> Optional[ScanResult]:
         """掃描單一公司。"""
-        # Bug #6 fix: fetch 2 quarters in one call to avoid redundant download in _evaluate
-        history = self._edgar.get_financials_history(ticker, n_quarters=2)
+        history = self._client.get_financials_history(ticker, n_quarters=5)
         if not history:
             return None
 
-        return self._evaluate(history[0], history)
+        config = TickerResolver.get_market_config(ticker)
+        return self._evaluate(history[0], history, config)
 
-    def _evaluate(self, stmt: FinancialStatement, history: list[FinancialStatement] | None = None) -> ScanResult:
+    def _evaluate(self, stmt: FinancialStatement, history: list[FinancialStatement] | None = None, config: Optional[MarketConfig] = None) -> ScanResult:
         """根據 5 項條件評估一家公司。"""
+        if config is None:
+            config = getattr(self, '_market_config', MARKET_CONFIGS["US"])
+
+        eps_yoy = None
+        if history and len(history) >= 5:
+            yoy_stmt = history[4]
+            if stmt.eps_diluted is not None and yoy_stmt.eps_diluted is not None and yoy_stmt.eps_diluted > 0:
+                eps_yoy = (stmt.eps_diluted - yoy_stmt.eps_diluted) / yoy_stmt.eps_diluted
+
         result = ScanResult(
             ticker=stmt.ticker,
             company_name=stmt.company_name,
             latest_statement=stmt,
+            eps_yoy=eps_yoy if eps_yoy is not None else 0.0
         )
 
         # 條件 1: 營收年增率
@@ -104,7 +126,7 @@ class FinancialScanner:
         # 條件 3: 估值合理
         pe = stmt.pe_ratio
         if pe is not None and pe > 0:
-            if pe < 30:
+            if pe < config.valuation_pe_cap:
                 result.passes_valuation = True
 
         # 條件 4: 自由現金流健康
@@ -116,23 +138,86 @@ class FinancialScanner:
                 result.passes_cash_flow = True
 
         # 條件 5: 負債健康
-        if stmt.debt_to_equity is None:
+        sector = getattr(stmt, 'sector', None)
+        if sector and sector in config.debt_exempt_sectors:
+            result.passes_debt_health = True
+        elif stmt.debt_to_equity is None:
             result.passes_debt_health = True
         elif stmt.debt_to_equity < MAX_DEBT_TO_EQUITY:
             result.passes_debt_health = True
 
         # 估值等級判定
+        tiers = config.valuation_tiers
         if pe is None or pe < 0:
             result.valuation_rating = ValuationRating.FAIR
-        elif pe < 10:
+        elif pe < tiers.get("DEEPLY_UNDERVALUED", 10):
             result.valuation_rating = ValuationRating.DEEPLY_UNDERVALUED
-        elif pe < 18:
+        elif pe < tiers.get("UNDERVALUED", 18):
             result.valuation_rating = ValuationRating.UNDERVALUED
-        elif pe < 28:
+        elif pe < tiers.get("FAIR", 28):
             result.valuation_rating = ValuationRating.FAIR
-        elif pe < 45:
+        elif pe < tiers.get("OVERVALUED", 45):
             result.valuation_rating = ValuationRating.OVERVALUED
         else:
             result.valuation_rating = ValuationRating.EXTREMELY_OVERVALUED
+
+        # ── Epic 1: 本業純度檢驗 (Core Purity) ──
+        if history and len(history) >= 5:
+            # YoY 比較: 取 4 季前的 statement
+            yoy_stmt = history[4]
+            
+            eps_yoy = None
+            if stmt.eps_diluted is not None and yoy_stmt.eps_diluted is not None and yoy_stmt.eps_diluted > 0:
+                eps_yoy = (stmt.eps_diluted - yoy_stmt.eps_diluted) / yoy_stmt.eps_diluted
+                result.eps_yoy = eps_yoy  # Update result
+                
+            op_inc_yoy = None
+            if stmt.operating_income is not None and yoy_stmt.operating_income is not None and yoy_stmt.operating_income > 0:
+                op_inc_yoy = (stmt.operating_income - yoy_stmt.operating_income) / yoy_stmt.operating_income
+
+            if eps_yoy is not None and op_inc_yoy is not None:
+                if eps_yoy < 0 and op_inc_yoy > 0:
+                    result.flags.append("FX_Hidden_Gem")
+                elif eps_yoy > 0 and op_inc_yoy < 0:
+                    result.flags.append("Earnings_Quality_Discount")
+
+        # ── Epic 1: Q4 隱含季盈餘推估 ──
+        from .implied_earnings import ImpliedEarningsEstimator
+        if config.market == "TW" and getattr(self._client, "get_monthly_revenue", None):
+            current_month = datetime.now(timezone.utc).month
+            # 在 1~3 月期間，若最新財報為 Q3，則推估 Q4
+            if current_month in (1, 2, 3) and stmt.fiscal_quarter == 3:
+                try:
+                    df_rev = self._client.get_monthly_revenue(ticker, months=3)
+                    if not df_rev.empty:
+                        recent_revs = df_rev["revenue"].tolist()
+                        
+                        hist_q4_margins = []
+                        if history:
+                            for h in history:
+                                if h.fiscal_quarter == 4 and h.net_income is not None and h.revenue is not None and h.revenue > 0:
+                                    hist_q4_margins.append(h.net_income / h.revenue)
+                                if len(hist_q4_margins) >= 3:
+                                    break
+                                    
+                        last_q_net_margin = stmt.net_income / stmt.revenue if stmt.revenue and stmt.net_income else None
+                        # 台股股本 = total_equity / 10 只是粗略估算，實際最好使用 outstanding_shares
+                        out_shares = stmt.total_equity / 10 if stmt.total_equity else None
+                        
+                        if last_q_net_margin is not None and out_shares is not None:
+                            est_eps = ImpliedEarningsEstimator.estimate_current_quarter_eps(
+                                ticker=ticker,
+                                recent_monthly_revenue=recent_revs,
+                                last_quarter_net_margin=last_q_net_margin,
+                                outstanding_shares=int(out_shares),
+                                is_q4=True,
+                                historical_q4_net_margins=hist_q4_margins
+                            )
+                            if est_eps is not None:
+                                result.estimated_eps = est_eps
+                                result.is_estimate = True
+                                logger.info("[%s] Implied Q4 EPS estimated: %.4f", ticker, est_eps)
+                except Exception as e:
+                    logger.warning("Failed to estimate Q4 EPS for %s: %s", ticker, e)
 
         return result

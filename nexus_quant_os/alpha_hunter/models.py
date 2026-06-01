@@ -50,17 +50,25 @@ class SupplyChainRelation(enum.Enum):
 class FinancialStatement:
     """一家公司一個季度的財報摘要。
 
-    所有金額單位：美元（USD）。
+    金額單位由 currency 欄位決定（"USD" 或 "TWD"）。
     所有比率單位：小數（0.15 = 15%）。
     如果 XBRL 中沒有該欄位 → 設為 None（不要設為 0.0）。
     """
-    ticker: str                              # e.g. "NVDA"
-    cik: str                                 # SEC CIK 號碼，10位數字符串
-    company_name: str                        # e.g. "NVIDIA Corporation"
-    filing_date: datetime                    # SEC 申報日期（UTC）
-    period_end: datetime                     # 報告期間結束日（UTC）
-    fiscal_year: int                         # e.g. 2024
-    fiscal_quarter: int                      # 1, 2, 3, 4
+    ticker: str                              # e.g. "NVDA" 或 "2330.TW"
+    isin_code: Optional[str] = None          # e.g. "TW0002330008" (Edge Case #46)
+    listing_date: Optional[datetime] = None  # (Edge Case #46)
+    company_name: str = ""                   # e.g. "NVIDIA Corporation"
+    filing_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    period_end: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    fiscal_year: int = 0
+    fiscal_quarter: int = 0
+    
+    # ── 多市場擴充（Phase 0 新增）──
+    cik: Optional[str] = None                # SEC CIK（僅美股有）
+    market: str = "US"                       # "US" | "TW"
+    currency: str = "USD"                    # "USD" | "TWD"
+    stock_id: Optional[str] = None           # 台股代碼（僅台股有，e.g. "2330"）
+    fx_rate_to_usd: Optional[float] = None   # 財報截止日的歷史匯率（TWD→USD）
 
     # 損益表
     revenue: Optional[float] = None                # 營收
@@ -103,9 +111,15 @@ class ScanResult:
     ticker: str
     company_name: str
     latest_statement: FinancialStatement
+    isin_code: Optional[str] = None          # (Edge Case #46)
+    listing_date: Optional[datetime] = None  # (Edge Case #46)
     scan_timestamp: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    estimated_eps: Optional[float] = None
+    is_estimate: bool = False
+    flags: list[str] = field(default_factory=list)
+    eps_yoy: float = 0.0                     # 記錄計算出的 EPS YoY
 
     # 篩選條件結果（每個都是 bool）
     passes_revenue_growth: bool = False      # 營收 YoY > 10%
@@ -258,6 +272,10 @@ class EnrichedNode:
     ticker: str
     depth: int
     llm_source: str = "unknown"
+    
+    # ── 多市場擴充（Phase 0 新增）──
+    market: str = "US"                          # "US" | "TW"
+    high_freq_catalyst_score: float = 0.0       # 台股月營收動能 Z-Score
     
     # ── 深度掃描結果 ──
     composite_score: Optional[float] = None      # [0, 1]

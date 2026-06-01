@@ -125,16 +125,19 @@ class AlphaSignalGenerator:
     ) -> AlphaSignal:
         ticker = scan.ticker
         
-        # 取得 10-K 文本（供 AI 分析和供應鏈用）
+        # 取得文本（供 AI 分析和供應鏈用）
         filing_texts = {}
         if include_ai_analysis or include_supply_chain:
             try:
-                filing_texts = self._scanner._edgar.get_filing_text(
-                    ticker, filing_type="10-K", sections=["mda", "risk"]
+                from .ticker_resolver import TickerResolver
+                market_config = TickerResolver.get_market_config(ticker)
+                filing_type = market_config.filing_types.get("annual", "10-K")
+                filing_texts = self._scanner._client.get_filing_text(
+                    ticker, filing_type=filing_type, sections=["mda", "risk"]
                 )
                 # 外國公司沒有 10-K，嘗試 20-F
-                if not any(filing_texts.values()):
-                    filing_texts = self._scanner._edgar.get_filing_text(
+                if not any(filing_texts.values()) and filing_type == "10-K":
+                    filing_texts = self._scanner._client.get_filing_text(
                         ticker, filing_type="20-F", sections=["mda", "risk"]
                     )
             except Exception as e:
@@ -182,25 +185,92 @@ class AlphaSignalGenerator:
         signal.composite_score = self._compute_composite_score(scan, graph, analysis, technical_ok)
         signal.signal_strength = self._determine_strength(signal)
         
+        # Edge Case #44: 可轉債 (CB) 養套殺防禦
+        try:
+            from .mops_scraper import MOPSScraper
+            cb_scraper = MOPSScraper()
+            premium, balance_dropped = cb_scraper.get_cb_balance_and_premium(ticker)
+            if premium > 0.20 and balance_dropped:
+                logger.warning("Toxic_Dilution_Risk triggered for %s: CB Premium > 20%% and balance dropping. Forcing AVOID.", ticker)
+                signal.signal_strength = SignalStrength.AVOID
+                signal.composite_score = max(0.0, signal.composite_score - 0.5)
+        except Exception as e:
+            logger.warning("Failed to check CB balance for %s: %s", ticker, e)
+            
+        # 決策三 (動態預期跨欄): Sell-the-News 防禦機制
+        # 若事前情緒極度樂觀 (AI Score > 0.8 模擬 Z-Score > 1.5)
+        if analysis and analysis.ai_score > 0.8:
+            if scan.latest_statement:
+                # 這裡檢查 EPS YoY 或 Implied EPS YoY
+                eps_yoy = scan.eps_yoy
+                if getattr(scan, "is_estimate", False):
+                    eps_yoy = getattr(scan, "estimated_eps", eps_yoy)  # 如果有 estimate
+                
+                # 若未達 30% 則觸發否決
+                if eps_yoy < 0.30:
+                    logger.warning("Sell-the-News triggered for %s: Overheated sentiment (%.2f) but EPS YoY %.1f%% < 30%%", 
+                                   ticker, analysis.ai_score, eps_yoy * 100)
+                    signal.signal_strength = SignalStrength.AVOID
+                    signal.fundamental_pass = False
+        
+        # 決策二 (籌碼絕對否決): Smart Money Veto
+        # 在 technical_ok 回傳 False 時觸發，或另外寫邏輯
+        try:
+            is_above_20ma, is_smart_money_veto = self._check_smart_money_and_technical(ticker)
+            signal.technical_confirm = is_above_20ma
+            if is_smart_money_veto:
+                logger.warning("Smart Money Veto triggered for %s: Institutional 3-day net sell + below 20MA", ticker)
+                signal.signal_strength = SignalStrength.AVOID
+                signal.composite_score = max(0.0, signal.composite_score - 0.5)
+        except Exception as e:
+            logger.warning("Failed to check Smart Money Veto for %s: %s", ticker, e)
+
         return signal
 
-    def _check_technical(self, ticker: str) -> bool:
-        """技術面確認：價格是否在 200MA 之上。"""
+    def _check_smart_money_and_technical(self, ticker: str) -> tuple[bool, bool]:
+        """技術面確認與籌碼否決：
+        1. 價格是否在 200MA 之上。
+        2. 是否觸發 Smart Money Veto (外資/投信連 3 日賣超且跌破 20MA)。
+        Returns: (is_above_200ma, is_veto)
+        """
         try:
-            df = yf.download(ticker, period="1y", progress=False)
+            from .ticker_resolver import TickerResolver
+            yf_ticker = TickerResolver.to_yfinance(ticker)
+            df = yf.download(yf_ticker, period="1y", progress=False)
             if df.empty or len(df) < TECHNICAL_MA_PERIOD:
-                return False
+                return False, False
                 
-            close_prices = df["Close"]
+            price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
+            close_prices = df[price_col]
+            
             if isinstance(close_prices, pd.DataFrame):
                 close_prices = close_prices.iloc[:, 0]
                 
             ma200 = close_prices.rolling(TECHNICAL_MA_PERIOD).mean().iloc[-1]
+            ma20 = close_prices.rolling(20).mean().iloc[-1]
             current = close_prices.iloc[-1]
-            return bool(current > ma200)
+            
+            is_above_200ma = bool(current > ma200)
+            is_below_20ma = bool(current < ma20)
+            
+            is_veto = False
+            if is_below_20ma:
+                from .twse_client import TWSEClient
+                twse = TWSEClient()
+                flow_df = twse.get_institutional_flow(ticker, days=3)
+                if not flow_df.empty and len(flow_df) >= 3:
+                    # 連續三日賣超
+                    is_veto = (flow_df["buy_sell"] < 0).all()
+                    
+            return is_above_200ma, is_veto
         except Exception as e:
-            logger.warning("Technical check failed for %s: %s", ticker, e)
-            return False
+            logger.warning("Technical/Veto check failed for %s: %s", ticker, e)
+            return False, False
+
+    def _check_technical(self, ticker: str) -> bool:
+        # 保留舊方法以相容其他模組
+        is_above, _ = self._check_smart_money_and_technical(ticker)
+        return is_above
 
     def _compute_composite_score(
         self,

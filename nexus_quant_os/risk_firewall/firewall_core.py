@@ -171,10 +171,13 @@ class IntelligentRiskFirewall:
         ood_detector: OODAnomalyDetector,
         config: FirewallConfig | None = None,
     ) -> None:
-        self.hmm_detector = hmm_detector
-        self.ood_detector = ood_detector
         self.config       = config or FirewallConfig()
-        self._is_fitted   = False
+        
+        # Phase 3: 支援多市場獨立風控模型 (防禦 Edge Case B13)
+        self.hmm_detectors: dict[str, MarketRegimeDetector] = {"US": hmm_detector}
+        self.ood_detectors: dict[str, OODAnomalyDetector] = {"US": ood_detector}
+        self._is_fitted: dict[str, bool] = {"US": False}
+        
         self._lock = threading.Lock()
 
     def __getstate__(self):
@@ -206,7 +209,22 @@ class IntelligentRiskFirewall:
     # 3a. Training
     # -----------------------------------------------------------------
 
-    def fit(self, normal_market_features: np.ndarray) -> "IntelligentRiskFirewall":
+class DummyMarketRegimeDetector(MarketRegimeDetector):
+    """優雅降級：找不到模型時的回退機制。"""
+    def predict(self, observation_window: np.ndarray) -> RegimePrediction:
+        return RegimePrediction(
+            most_likely_regime=1,
+            regime_probabilities=np.array([0.0, 1.0, 0.0]),
+            danger_probability=0.0,
+            bear_probability=1.0,
+            is_dangerous=False,
+            regime_label="NEUTRAL_FALLBACK",
+        )
+    def fit(self, *args, **kwargs):
+        self._is_fitted = True
+        return self
+
+    def fit(self, normal_market_features: np.ndarray, market: str = "US") -> "IntelligentRiskFirewall":
         """Train both internal detectors on normal market data.
 
         Parameters
@@ -214,14 +232,46 @@ class IntelligentRiskFirewall:
         normal_market_features : np.ndarray
             Shape ``[T, F]`` — historical observations from calm/normal
             market periods only.
+        market : str
+            Target market identifier (e.g., "US", "TW").
         """
         with self._lock:
-            logger.info("Fitting IntelligentRiskFirewall on %d samples...",
-                        len(normal_market_features))
-            self.hmm_detector.fit(normal_market_features)
-            self.ood_detector.fit(normal_market_features)
-            self._is_fitted = True
-            logger.info("Firewall fit complete.")
+            # 防禦 B13：若為新市場，建立獨立的 Detector 實例
+            if market not in self.hmm_detectors:
+                if market == "TW":
+                    import os, pickle
+                    pkl_path = os.path.join(os.path.dirname(__file__), "tw_hmm.pkl")
+                    if os.path.exists(pkl_path):
+                        try:
+                            with open(pkl_path, "rb") as f:
+                                self.hmm_detectors[market] = pickle.load(f)
+                            self._is_fitted[market] = True
+                            logger.info("Loaded pre-trained TW_HMM from %s", pkl_path)
+                        except Exception as e:
+                            logger.error("Failed to load tw_hmm.pkl: %s", e)
+                            self.hmm_detectors[market] = DummyMarketRegimeDetector()
+                            self._is_fitted[market] = True
+                    else:
+                        logger.warning("tw_hmm.pkl not found, using Graceful Degradation")
+                        self.hmm_detectors[market] = DummyMarketRegimeDetector()
+                        self._is_fitted[market] = True
+                else:
+                    base_hmm_cfg = self.hmm_detectors["US"].config
+                    self.hmm_detectors[market] = MarketRegimeDetector(base_hmm_cfg)
+                    self._is_fitted[market] = False
+
+                base_ood_cfg = self.ood_detectors["US"].config
+                self.ood_detectors[market] = OODAnomalyDetector(base_ood_cfg)
+                if market != "TW":
+                    self._is_fitted[market] = False
+
+            if not self._is_fitted[market]:
+                logger.info("Fitting IntelligentRiskFirewall [%s] on %d samples...",
+                            market, len(normal_market_features))
+                self.hmm_detectors[market].fit(normal_market_features)
+                self.ood_detectors[market].fit(normal_market_features)
+                self._is_fitted[market] = True
+                logger.info("Firewall [%s] fit complete.", market)
             return self
 
     # -----------------------------------------------------------------
@@ -348,6 +398,8 @@ class IntelligentRiskFirewall:
         self,
         market_features: np.ndarray,
         raw_weights: np.ndarray,
+        market: str = "US",
+        margin_ratio: Optional[float] = None,
     ) -> FirewallDecision:
         """Apply firewall logic to raw MoE Router position weights.
 
@@ -357,6 +409,8 @@ class IntelligentRiskFirewall:
             Live market observation window.  Shape: ``[W, F]``.
         raw_weights : np.ndarray
             Position weights from MoE Router.  Shape: ``[N_assets]``.
+        market : str
+            Market identifier.
 
         Returns
         -------
@@ -364,17 +418,24 @@ class IntelligentRiskFirewall:
             Full audit record including adjusted weights.
         """
         with self._lock:
-            if not self._is_fitted:
+            if market not in self._is_fitted or not self._is_fitted[market]:
                 raise RuntimeError(
-                    "IntelligentRiskFirewall not fitted. Call .fit() first."
+                    f"IntelligentRiskFirewall [{market}] not fitted. Call .fit() first."
                 )
 
-            # 1. Run detectors
-            hmm_pred   = self.hmm_detector.predict(market_features)
-            ood_result = self.ood_detector.detect(market_features[-1:])
+            # 1. Run detectors (針對指定市場)
+            hmm_pred   = self.hmm_detectors[market].predict(market_features)
+            ood_result = self.ood_detectors[market].detect(market_features[-1:])
 
             # 2. Resolve risk tier
             tier, reason = self._resolve_tier(hmm_pred, ood_result)
+
+            # Edge Case #45: 融資斷頭多殺多 (Margin Call Cascade)
+            if market == "TW" and margin_ratio is not None and margin_ratio < 1.30:
+                logger.warning("Edge Case #45: 偵測到融資斷頭潮 (維持率 %.2f < 130%%). 啟動反轉撿屍邏輯.", margin_ratio)
+                if tier in (RiskTier.EMERGENCY, RiskTier.WARNING):
+                    tier = RiskTier.CAUTION
+                    reason += " [OVERRIDE: MARGIN CALL CASCADE - BUY THE DIP]"
 
             # 3. Compute scale factor
             scale = self._compute_scale_factor(

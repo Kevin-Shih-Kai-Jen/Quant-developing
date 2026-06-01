@@ -229,6 +229,15 @@ Output ONLY valid JSON. No markdown, no explanation.
             has_regulatory_risk=safe_bool(result_json.get("has_regulatory_risk"))
         )
 
+        # Edge Case #47: 地緣政治脫敏
+        geopolitical_keywords = ["軍演", "共軍", "台海危機", "兩岸緊張"]
+        if news_text and any(kw in news_text for kw in geopolitical_keywords):
+            if analysis.ai_score < 0:
+                logger.info("Edge Case #47: 偵測到地緣政治關鍵字，衰減負面 ai_score %f -> %f", analysis.ai_score, analysis.ai_score * 0.2)
+                analysis.ai_score *= 0.2
+            if analysis.management_tone < 0:
+                analysis.management_tone *= 0.2
+
         # ── 成功後寫入快取 ──
         try:
             cache_data = {

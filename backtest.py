@@ -461,14 +461,48 @@ def run_backtest(start_date: str | None = None, end_date: str | None = None) -> 
     )
     print(f"    ✓ 權重平滑已套用（含 VIX 動態視窗與 Expert-0 豁免）")
 
+    # ── Epic 3: 一字線拒絕成交 (Limit Order Reject) ──
+    high_df = aligned_df.pivot(index="timestamp", columns="asset_id", values="high")
+    low_df = aligned_df.pivot(index="timestamp", columns="asset_id", values="low")
+    
+    # 確保索引長度匹配
+    dates_to_use = dates_val[:min_len]
+    high_val = high_df.loc[dates_to_use, assets].values
+    low_val = low_df.loc[dates_to_use, assets].values
+    limit_reject_mask = (high_val == low_val) & (high_val > 0)
+    
+    reject_count = 0
+    for t in range(1, len(w_smooth)):
+        for i in range(len(assets)):
+            if limit_reject_mask[t, i]:
+                if w_smooth[t, i] != w_smooth[t-1, i]:
+                    w_smooth[t, i] = w_smooth[t-1, i]
+                    reject_count += 1
+    print(f"    ✓ 一字線拒絕成交已套用 (共觸發 {reject_count} 次)")
+
     # 計算每日權重變動 (Turnover)
     w_prev = np.vstack([np.zeros((1, w_smooth.shape[1])), w_smooth[:-1]])
     w_diff = w_smooth - w_prev  # [T_val, N_assets]
 
-    # 投資組合每日報酬
-    tc_cost     = TRANSACTION_COST_BPS * 1e-4          # bps → decimal
-    daily_tc    = np.abs(w_diff).sum(axis=1) * tc_cost # [T_val] 每日總交易費
-    port_ret    = (w_smooth * y_raw_val).sum(axis=1)    # [T_val]
+    # ── Epic 3: 台股摩擦成本 (單邊重稅 + 雙邊滑價) ──
+    daily_tc = np.zeros(min_len)
+    for i, asset in enumerate(assets):
+        diff = w_diff[:, i]
+        is_tw = asset.endswith(".TW") or asset.isdigit()
+        
+        if is_tw:
+            sell_tax = 0.003
+            slippage = 0.002
+            # 賣出時 (diff < 0) 徵收證交稅 + 滑價
+            # 買入時 (diff > 0) 徵收滑價
+            cost = np.where(diff < 0, np.abs(diff) * (sell_tax + slippage), np.abs(diff) * slippage)
+        else:
+            tc_cost = TRANSACTION_COST_BPS * 1e-4
+            cost = np.abs(diff) * tc_cost
+            
+        daily_tc += cost
+
+    port_ret    = (w_smooth * y_raw_val[:min_len]).sum(axis=1)    # [T_val]
     port_ret_tc = port_ret - daily_tc                   # 扣除交易成本
 
     # SPY 買進持有基準
