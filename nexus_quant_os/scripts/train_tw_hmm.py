@@ -125,6 +125,9 @@ class MacroSyncRollingFitter:
             
             self._last_trained_date = current_date
             
+        if self.model is None:
+            return 1
+            
         # 預測當前狀態 (基於最新的 features)
         latest_feature = features[-1:]
         current_state = self.model.predict(latest_feature)[0]

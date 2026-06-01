@@ -40,30 +40,8 @@ MACRO_COLS = [
 TECH_COLS = ["daily_return", "realised_vol", "high_low_spread", "volume_zscore"]
 
 
-def engineer_features(aligned_df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
-    """將對齊後的 DataFrame 轉換為數值特徵矩陣。
-
-    計算的特徵（共 9 個）：
-        - daily_return      : 日報酬率 (close-to-close)
-        - realised_vol      : 20 日滾動波動度
-        - high_low_spread   : 日內振幅 (high - low) / close
-        - volume_zscore     : 成交量 z-score (20 日滾動)
-        - cpi_yoy           : CPI 年增率 (來自 PiT 對齊)
-        - unemployment_rate : 失業率
-        - pmi_manufacturing : PMI 製造業指數
-        - credit_spread     : 信用利差
-        - yield_curve_slope : 殖利率曲線斜率（v2.0 新增）
-
-    Parameters
-    ----------
-    aligned_df : pd.DataFrame
-        經過 enforce_pit_alignment 處理後的 DataFrame。
-
-    Returns
-    -------
-    feature_matrix : np.ndarray  shape [T, F]  (F=9)
-    feature_names  : list[str]
-    """
+def add_technical_features(aligned_df: pd.DataFrame) -> pd.DataFrame:
+    """計算每個 (asset, date) 的技術面與總經特徵。"""
     df = aligned_df.copy()
 
     # ── 高頻技術特徵 ──────────────────────────────────────────────
@@ -84,8 +62,6 @@ def engineer_features(aligned_df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
     df["volume_zscore"] = (df["volume"] - vol_mean) / (vol_std + 1e-8)
 
     # ── 低頻總經特徵（已由 Aligner 嚴格對齊） ────────────────────
-    # 策略：在每個資產組內 forward-fill（已公開的值持續有效）
-    #       殘留的 NaN 以 0 填補
     for col in MACRO_COLS:
         if col in df.columns:
             df[col] = (
@@ -95,6 +71,12 @@ def engineer_features(aligned_df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
             df[col] = df[col].fillna(0.0)
         else:
             df[col] = 0.0
+            
+    return df
+
+def engineer_features(aligned_df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
+    """將對齊後的 DataFrame 轉換為數值特徵矩陣。"""
+    df = add_technical_features(aligned_df)
 
     # ── 合併為特徵矩陣 ────────────────────────────────────────────
     # 清除 NaN 行（前幾天的 MA 或無總經資料的早期日子）

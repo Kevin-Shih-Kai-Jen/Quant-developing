@@ -183,12 +183,12 @@ class FinancialScanner:
 
         # ── Epic 1: Q4 隱含季盈餘推估 ──
         from .implied_earnings import ImpliedEarningsEstimator
-        if config.market == "TW" and getattr(self._client, "get_monthly_revenue", None):
+        if config.market_id == "TW" and getattr(self._client, "get_monthly_revenue", None):
             current_month = datetime.now(timezone.utc).month
             # 在 1~3 月期間，若最新財報為 Q3，則推估 Q4
             if current_month in (1, 2, 3) and stmt.fiscal_quarter == 3:
                 try:
-                    df_rev = self._client.get_monthly_revenue(ticker, months=3)
+                    df_rev = self._client.get_monthly_revenue(stmt.ticker, months=3)
                     if not df_rev.empty:
                         recent_revs = df_rev["revenue"].tolist()
                         
@@ -206,7 +206,7 @@ class FinancialScanner:
                         
                         if last_q_net_margin is not None and out_shares is not None:
                             est_eps = ImpliedEarningsEstimator.estimate_current_quarter_eps(
-                                ticker=ticker,
+                                ticker=stmt.ticker,
                                 recent_monthly_revenue=recent_revs,
                                 last_quarter_net_margin=last_q_net_margin,
                                 outstanding_shares=int(out_shares),
@@ -216,8 +216,8 @@ class FinancialScanner:
                             if est_eps is not None:
                                 result.estimated_eps = est_eps
                                 result.is_estimate = True
-                                logger.info("[%s] Implied Q4 EPS estimated: %.4f", ticker, est_eps)
+                                logger.info("[%s] Implied Q4 EPS estimated: %.4f", stmt.ticker, est_eps)
                 except Exception as e:
-                    logger.warning("Failed to estimate Q4 EPS for %s: %s", ticker, e)
+                    logger.warning("Failed to estimate Q4 EPS for %s: %s", stmt.ticker, e)
 
         return result

@@ -301,12 +301,12 @@ class TWSEClient:
             
             text = scraper.get_investor_conference_text(stock_id)
             if text:
-                return {"mda": text, "risk_factors": ""}
+                return {"mda": text, "risk": ""}
             else:
-                return {"mda": "", "risk_factors": ""}
+                return {"mda": "", "risk": ""}
         except Exception as e:
             logger.warning("MOPS Unavailable [%s]: %s", ticker, e)
-            return {"mda": "", "risk_factors": ""}
+            return {"mda": "", "risk": ""}
 
     def get_monthly_revenue(self, ticker: str, months: int = 12) -> pd.DataFrame:
         """台股專屬高頻動能指標：取得月營收。"""

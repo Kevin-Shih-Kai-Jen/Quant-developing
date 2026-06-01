@@ -202,9 +202,14 @@ class AlphaSignalGenerator:
         if analysis and analysis.ai_score > 0.8:
             if scan.latest_statement:
                 # 這裡檢查 EPS YoY 或 Implied EPS YoY
-                eps_yoy = scan.eps_yoy
+                eps_yoy = getattr(scan, "eps_yoy", 0.0)
                 if getattr(scan, "is_estimate", False):
-                    eps_yoy = getattr(scan, "estimated_eps", eps_yoy)  # 如果有 estimate
+                    estimated_eps = getattr(scan, "estimated_eps", None)
+                    last_year_eps = getattr(scan, "last_year_eps", None)
+                    if estimated_eps is not None and last_year_eps is not None and last_year_eps > 0:
+                        eps_yoy = (estimated_eps - last_year_eps) / last_year_eps
+                    elif estimated_eps is not None and getattr(scan, "eps_yoy", None) is not None:
+                        eps_yoy = scan.eps_yoy # Fallback to existing eps_yoy if last_year_eps is missing
                 
                 # 若未達 30% 則觸發否決
                 if eps_yoy < 0.30:
@@ -212,6 +217,27 @@ class AlphaSignalGenerator:
                                    ticker, analysis.ai_score, eps_yoy * 100)
                     signal.signal_strength = SignalStrength.AVOID
                     signal.fundamental_pass = False
+                    
+        # 決策四 (低基期地雷 / Low-Base Effect Anomaly)
+        if scan.latest_statement:
+            last_eps = getattr(scan, "last_year_eps", 1.0)
+            if last_eps <= 0 and getattr(scan, "eps_yoy", 0) > 1.0:
+                logger.info(f"Low-Base Effect Normalizer activated for {ticker}: Last year EPS <= 0. Normalizing AI output.")
+                if analysis:
+                    analysis.ai_score = min(analysis.ai_score, 0.3) # 限制過度樂觀
+        
+        # 決策五 (AI 綠洗照妖鏡 / Buzzword Washing Deception)
+        if analysis and analysis.ai_score > 0.4:
+            catalysts_text = " ".join(analysis.growth_catalysts).upper()
+            if "AI" in catalysts_text or "高階" in catalysts_text or "成長" in catalysts_text:
+                # 取得 CAPEX YoY (如果 FeatureStore 沒有，不懲罰)
+                capex_yoy = getattr(scan, "capex_yoy", None) 
+                if capex_yoy is not None and capex_yoy <= 0:
+                    logger.warning(f"LIAR_PENALTY triggered for {ticker}: AI buzzwords detected but CAPEX YoY is {capex_yoy:.1%}. Forcing score to 0.")
+                    analysis.ai_score = 0.0
+                    signal.ai_bullish = False
+                    signal.composite_score = 0.0
+                    signal.signal_strength = SignalStrength.AVOID
         
         # 決策二 (籌碼絕對否決): Smart Money Veto
         # 在 technical_ok 回傳 False 時觸發，或另外寫邏輯

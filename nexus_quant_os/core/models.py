@@ -70,3 +70,39 @@ class BitemporalFinancialData(BaseModel):
     revenue: Optional[float] = None
     operating_income: Optional[float] = None
     is_restated: bool = False # 是否為重編後數據
+
+# ==========================================================
+# 4. 異步特徵矩陣 (Phase 12: Offline LLM Cruncher)
+# ==========================================================
+
+class OfflineAISignal(BaseModel):
+    """
+    強制結構化輸出的 Schema，用於 Gemini Batch API 或 Instructor 驗證。
+    """
+    turnaround_signal: bool = Field(default=False, description="是否出現轉機訊號")
+    capex_expansion_confidence: float = Field(default=0.0, description="資本支出擴張的信心水準 (0.0~1.0)")
+    management_tone_shift: float = Field(default=0.0, description="管理層語氣轉變 (-1.0~1.0)")
+    ai_score: float = Field(default=0.5, description="綜合投資推薦分數 (0.0~1.0)")
+    information_entropy: float = Field(default=0.0, description="資訊混亂度或不確定性 (越低代表文本越清晰)")
+
+class FinancialDataClient:
+    """Protocol for fetching financial texts."""
+    def get_filing_text(self, ticker: str, publish_date: str) -> str:
+        raise NotImplementedError
+
+class DummyTextProvider(FinancialDataClient):
+    """
+    產生大於 1000 字的假財報/法說會文本，用來測試文本修剪與實體盲化。
+    包含了一些誘餌字詞供 NER 測試。
+    """
+    def get_filing_text(self, ticker: str, publish_date: str) -> str:
+        base_text = f"Management's Discussion and Analysis for {ticker} published on {publish_date}. "
+        content = "We have seen strong demand in our core sectors. Our competitor has lost market share. " * 10
+        forward_guidance = "Forward Guidance: We expect revenue to grow. We plan to build a new factory next year. " * 10
+        filler = "The company continues to monitor global macroeconomic conditions. " * 50
+        # 故意加入敏感詞供盲化
+        sensitive_text = "We are shipping a lot to Apple and NVIDIA. Our CEO Jensen Huang says AI is the future. "
+        
+        full_text = base_text + sensitive_text + content + filler + forward_guidance
+        # 確保大於 1000 字 (大約重複幾次)
+        return (full_text * 10)

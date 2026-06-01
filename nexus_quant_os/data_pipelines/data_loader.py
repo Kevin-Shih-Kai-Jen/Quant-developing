@@ -21,7 +21,6 @@ Author : Nexus Quant OS — Data Engineering Division
 from __future__ import annotations
 
 import os
-import fcntl
 import logging
 from typing import Optional
 
@@ -53,7 +52,7 @@ FRED_SERIES_CONFIG: dict[str, dict] = {
         "transform":    None,
     },
     "INDPRO": {
-        "col":          "pmi_manufacturing",   # 工業生產指數作為製造業活動代理
+        "col":          "industrial_production",
         "pub_delay_days": 17,                  # 發佈於參考月份結束後約 2-3 週
         "transform":    None,
     },
@@ -197,12 +196,15 @@ def load_price_data(
     result = result.sort_values(["asset_id", "timestamp"]).reset_index(drop=True)
     
     # 存回快取 (with file lock)
-    with open(cache_path, 'w') as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            result.to_csv(f, index=False)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    try:
+        from filelock import FileLock
+        lock = FileLock(cache_path + ".lock")
+        with lock:
+            result.to_csv(cache_path, index=False)
+    except ImportError:
+        # Fallback if filelock is missing
+        result.to_csv(cache_path, index=False)
+        
     logger.info("價格數據快取已更新。")
     return result
 
@@ -308,7 +310,7 @@ def load_macro_data(
             logger.warning("⚠️ FRED API 異常且找不到本地快取！啟動合成數據降級模式 (Synthetic Fallback)...")
             macro_daily["cpi_yoy"] = 3.0
             macro_daily["unemployment_rate"] = 4.0
-            macro_daily["pmi_manufacturing"] = 50.0
+            macro_daily["industrial_production"] = 100.0
             macro_daily["fed_funds_rate"] = 5.0
             macro_daily["credit_spread"] = 2.0
             macro_daily["yield_curve_slope"] = -0.5

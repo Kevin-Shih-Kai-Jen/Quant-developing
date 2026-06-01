@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 import requests
+import dataclasses
 
 from .models import AIAnalysis
 from ._constants import (
@@ -120,7 +121,7 @@ Output ONLY valid JSON. No markdown, no explanation.
                     self._last_request_time = time.monotonic()
 
                 pdf_file = genai.upload_file(path=mda_text)
-                resp = model_obj.generate_content([prompt, pdf_file], generation_config=genai.types.GenerationConfig(temperature=0.7))
+                resp = model_obj.generate_content([prompt, pdf_file], generation_config=genai.types.GenerationConfig(temperature=LLM_TEMPERATURE))
                 text = resp.text.strip()
                 try:
                     pdf_file.delete()
@@ -145,7 +146,7 @@ Output ONLY valid JSON. No markdown, no explanation.
             # 【升級七】強制 Temperature=0.7 引入擾動
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.7}
+                "generationConfig": {"temperature": LLM_TEMPERATURE}
             }
 
             for attempt in range(self._max_retries):
@@ -269,6 +270,10 @@ Output ONLY valid JSON. No markdown, no explanation.
         # 平均數值分數
         avg_ai_score = sum(r.get("ai_score", 0.0) for r in results) / len(results)
         avg_tone = sum(r.get("management_tone", 0.0) for r in results) / len(results)
+        
+        # 限制範圍
+        avg_ai_score = max(-1.0, min(1.0, avg_ai_score))
+        avg_tone = max(-1.0, min(1.0, avg_tone))
 
         # 毒藥檢測：如果平均資訊熵大於 0.8 (代表分歧極大)
         if avg_entropy > 0.8:
@@ -297,7 +302,7 @@ Output ONLY valid JSON. No markdown, no explanation.
 
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(analysis.dict(), f)
+                json.dump(dataclasses.asdict(analysis), f)
         except Exception:
             pass
 

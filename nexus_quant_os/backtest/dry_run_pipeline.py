@@ -24,8 +24,11 @@ from nexus_quant_os.backtest.execution import Order
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("DryRunPipeline")
 
-DATA_LAKE_DIR = "/Users/coolguy/developer/nexus_quant_os/nexus_quant_os/data_lake/parquet"
-SIGNAL_MATRIX_PATH = "/Users/coolguy/developer/nexus_quant_os/nexus_quant_os/data_lake/Signal_Matrix.parquet"
+import pathlib
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
+DATA_LAKE_DIR = str(BASE_DIR / "data_lake" / "parquet")
+SIGNAL_MATRIX_PATH = str(BASE_DIR / "data_lake" / "Signal_Matrix.parquet")
 
 # =========================================================================
 # 1. 雙軌漏斗模型與平行訊號生成 (Parallel Layer)

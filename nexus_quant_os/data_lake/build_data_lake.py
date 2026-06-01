@@ -19,7 +19,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 使用常數定義閥門與日期
-DATA_LAKE_DIR = "/Users/coolguy/developer/nexus_quant_os/nexus_quant_os/data_lake/parquet"
+import pathlib
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+DATA_LAKE_DIR = str(BASE_DIR / "parquet")
 START_DATE = "2014-01-01"
 END_DATE = "2024-12-31"
 LIQUIDITY_THRESHOLD_TWD = 50_000_000  # 5000 萬台幣
@@ -46,7 +48,9 @@ def build_data_lake(universe: List[str]):
             
             # 清理欄位
             pdf = pdf.reset_index()
-            pdf.rename(columns={"Date": "date"}, inplace=True)
+            # yfinance returns index name 'Date' or 'Datetime'
+            date_col = 'Date' if 'Date' in pdf.columns else 'Datetime' if 'Datetime' in pdf.columns else pdf.columns[0]
+            pdf.rename(columns={date_col: "date"}, inplace=True)
             # 強制將時區移除以確保 Polars 相容性
             pdf['date'] = pd.to_datetime(pdf['date']).dt.tz_localize(None)
 

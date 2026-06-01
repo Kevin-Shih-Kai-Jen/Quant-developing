@@ -36,15 +36,17 @@ class BacktestEngine:
         """
         logger.info(f"Advancing time from {current_date} to {next_date}")
         
+        # 推進 T+2 結算
+        self.portfolio.advance_day(next_date)
+        
         # 執行訂單
         unfilled = []
         for order in self._pending_orders:
             # order.date 是 T 日，現在我們用 next_date (T+1) 的資料執行
             res = self.execution.execute(order, next_date)
             logger.info(f"Order {order.ticker} {order.amount} -> {res.status}")
-            if res.status == "REJECTED_NO_LIQUIDITY" or res.status == "PENDING":
-                # 未能完全成交，依策略決定是否順延。這裡簡化為直接丟棄
-                pass
+            if res.status in ["REJECTED_NO_LIQUIDITY", "PENDING", "REJECTED_NO_FUNDS"]:
+                logger.warning(f"[WARNING] Order {order.ticker} {order.amount} was {res.status}. Reason: {getattr(res, 'reason', 'N/A')}")
         self._pending_orders.clear()
 
         # 處理 corporate actions 暫略... 實務上要比對 dividend 日期

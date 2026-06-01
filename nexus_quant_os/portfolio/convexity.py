@@ -42,22 +42,31 @@ class ConvexityHedger:
         drop = -market_drop_percentage if market_drop_percentage < 0 else 0.0
         
         if drop <= 0:
-            # 平時緩步扣血 (時間價值流失)
-            bleed = self.current_hedge_value * 0.05 # 每天流失 5% 權利金
+            # 實盤中，Deep OTM Put 每天的 Theta 耗損極高，但降為 3% 以符合現實
+            bleed = self.current_hedge_value * 0.03 
             self.current_hedge_value -= bleed
             return 0.0
             
-        # 假設跌幅超過 4%，啟動 20 倍到 50 倍的凸性爆發
-        if drop > 0.04:
-            multiplier = 20 + (drop - 0.04) * 1000 # 簡單的非線性乘數
+        # 假設跌幅超過 2% (真實隱含波動率門檻)，啟動 Gamma 爆發
+        if drop > 0.02:
+            # 爆發乘數從 2% 開始算，最大上限 30 倍 (避免過度樂觀)
+            multiplier = 5 + (drop - 0.02) * 500
             multiplier = min(50, multiplier)
             
-            payoff = self.current_hedge_value * multiplier
-            logger.warning(f"BLACK SWAN DETECTED! Market dropped {market_drop_percentage:.2%}. Convexity Payoff: {multiplier:.1f}x -> {payoff:,.2f} Cash Generated!")
+            raw_payoff = self.current_hedge_value * multiplier
+            
+            # 【升級十一：造市商罷工與恐慌折價 (Crisis Liquidity Haircut)】
+            # 極端行情下，選擇權造市商會拉大價差或不報價，導致理論獲利必須打折。使用決定性計算。
+            haircut = 0.4 + min(drop * 2, 0.2)  # 最大折價 60%
+            final_payoff = raw_payoff * (1 - haircut)
+            
+            logger.warning(f"BLACK SWAN DETECTED! Market dropped {market_drop_percentage:.2%}. Raw Multiplier: {multiplier:.1f}x. Applying {haircut:.1%} Liquidity Haircut! Final Payoff: {final_payoff:,.2f}")
             
             # 爆發後部位清空
             self.current_hedge_value = 0.0
             self.hedge_cost_basis = 0.0
-            return payoff
+            
+            # 回傳的最終現金流，實務上需透過 main_runner 存入 T+1 receivable
+            return final_payoff
             
         return 0.0

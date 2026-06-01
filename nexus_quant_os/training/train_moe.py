@@ -53,6 +53,7 @@ from nexus_quant_os.models.moe_router import (
 from nexus_quant_os.data_pipelines.data_loader import load_all_data
 from nexus_quant_os.data_pipelines.aligner import enforce_pit_alignment
 from nexus_quant_os.risk_firewall.firewall_core import IntelligentRiskFirewall, HMMConfig, OODConfig, FirewallConfig
+from nexus_quant_os.data_pipelines.feature_engineer import add_technical_features
 import pickle
 
 logger = logging.getLogger("nexus_quant_os.training.train_moe")
@@ -332,40 +333,6 @@ class CombinedPortfolioLoss(nn.Module):
 # 數據集構建：橫截面日度格式
 # ═════════════════════════════════════════════════════════════════════
 
-def _add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
-    """計算每個 (asset, date) 的技術面特徵 + 前瞻報酬。"""
-    df = df.copy()
-
-    # 技術面特徵
-    df["daily_return"]    = df.groupby("asset_id")["close"].pct_change()
-    df["realised_vol"]    = (
-        df.groupby("asset_id")["daily_return"]
-        .transform(lambda x: x.rolling(VOL_LOOKBACK, min_periods=5).std())
-    )
-    df["high_low_spread"] = (df["high"] - df["low"]) / (df["close"] + 1e-8)
-
-    vol_mean = df.groupby("asset_id")["volume"].transform(
-        lambda x: x.rolling(VOL_LOOKBACK, min_periods=5).mean()
-    )
-    vol_std = df.groupby("asset_id")["volume"].transform(
-        lambda x: x.rolling(VOL_LOOKBACK, min_periods=5).std()
-    )
-    df["volume_zscore"] = (df["volume"] - vol_mean) / (vol_std + 1e-8)
-
-    # 總經特徵：ffill → fillna(0)（殘留的 NaN 以 0 填補）
-    for col in MACRO_COLS:
-        if col in df.columns:
-            df[col] = (
-                df.groupby("asset_id")[col]
-                .transform(lambda x: x.ffill())
-            )
-            df[col] = df[col].fillna(0.0)
-        else:
-            df[col] = 0.0
-
-    # 前瞻報酬（訓練目標）：t+1 的報酬，在 t 時預測
-    df["forward_return"] = df.groupby("asset_id")["daily_return"].shift(-1)
-
     return df
 
 
@@ -396,7 +363,8 @@ def build_daily_dataset(
     dates  : pd.DatetimeIndex
     assets : list[str]                  (字母排序，與欄位順序一致)
     """
-    df = _add_technical_features(aligned_df)
+    df = add_technical_features(aligned_df)
+    df["forward_return"] = df.groupby("asset_id")["daily_return"].shift(-1)
 
     # 推論模式：只要求技術指標欄位非 NaN，不要求 forward_return
     # 這樣最後一天（尚無明天報酬）不會被丟棄
@@ -755,9 +723,8 @@ def load_checkpoint(
     path: Path,
 ) -> tuple[QuantMoERouter, StandardScaler, list[str], Optional[IntelligentRiskFirewall]]:
     """從 checkpoint 重建 Router + StandardScaler + Firewall。"""
-    # SECURITY NOTE: weights_only=False allows arbitrary code execution.
-    # Only load checkpoints from trusted sources.
-    ckpt      = torch.load(path, map_location="cpu", weights_only=False)
+    # SECURITY NOTE: weights_only=True is safe
+    ckpt      = torch.load(path, map_location="cpu", weights_only=True)
     cfg       = ckpt["router_config"]
     hidden    = ckpt.get("hidden_dim", HIDDEN_DIM)
 

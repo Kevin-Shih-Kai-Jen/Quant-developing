@@ -151,6 +151,21 @@ class FirewallDecision:
 # 3. CORE FIREWALL CLASS
 # =====================================================================
 
+class DummyMarketRegimeDetector(MarketRegimeDetector):
+    """優雅降級：找不到模型時的回退機制。"""
+    def predict(self, observation_window: np.ndarray) -> RegimePrediction:
+        return RegimePrediction(
+            most_likely_regime=1,
+            regime_probabilities=np.array([0.0, 1.0, 0.0]),
+            danger_probability=0.0,
+            bear_probability=1.0,
+            is_dangerous=False,
+            regime_label="NEUTRAL_FALLBACK",
+        )
+    def fit(self, *args, **kwargs):
+        self._is_fitted = True
+        return self
+
 class IntelligentRiskFirewall:
     """Probabilistic, ML-driven risk firewall for position weight control.
 
@@ -209,21 +224,6 @@ class IntelligentRiskFirewall:
     # 3a. Training
     # -----------------------------------------------------------------
 
-class DummyMarketRegimeDetector(MarketRegimeDetector):
-    """優雅降級：找不到模型時的回退機制。"""
-    def predict(self, observation_window: np.ndarray) -> RegimePrediction:
-        return RegimePrediction(
-            most_likely_regime=1,
-            regime_probabilities=np.array([0.0, 1.0, 0.0]),
-            danger_probability=0.0,
-            bear_probability=1.0,
-            is_dangerous=False,
-            regime_label="NEUTRAL_FALLBACK",
-        )
-    def fit(self, *args, **kwargs):
-        self._is_fitted = True
-        return self
-
     def fit(self, normal_market_features: np.ndarray, market: str = "US") -> "IntelligentRiskFirewall":
         """Train both internal detectors on normal market data.
 
@@ -239,12 +239,11 @@ class DummyMarketRegimeDetector(MarketRegimeDetector):
             # 防禦 B13：若為新市場，建立獨立的 Detector 實例
             if market not in self.hmm_detectors:
                 if market == "TW":
-                    import os, pickle
+                    import os, joblib
                     pkl_path = os.path.join(os.path.dirname(__file__), "tw_hmm.pkl")
                     if os.path.exists(pkl_path):
                         try:
-                            with open(pkl_path, "rb") as f:
-                                self.hmm_detectors[market] = pickle.load(f)
+                            self.hmm_detectors[market] = joblib.load(pkl_path)
                             self._is_fitted[market] = True
                             logger.info("Loaded pre-trained TW_HMM from %s", pkl_path)
                         except Exception as e:
@@ -262,16 +261,17 @@ class DummyMarketRegimeDetector(MarketRegimeDetector):
 
                 base_ood_cfg = self.ood_detectors["US"].config
                 self.ood_detectors[market] = OODAnomalyDetector(base_ood_cfg)
-                if market != "TW":
-                    self._is_fitted[market] = False
 
-            if not self._is_fitted[market]:
-                logger.info("Fitting IntelligentRiskFirewall [%s] on %d samples...",
-                            market, len(normal_market_features))
+            if not getattr(self.hmm_detectors[market], '_is_fitted', False):
+                logger.info("Fitting HMM Detector [%s]...", market)
                 self.hmm_detectors[market].fit(normal_market_features)
+            
+            if not getattr(self.ood_detectors[market], '_is_fitted', False):
+                logger.info("Fitting OOD Detector [%s] on %d samples...",
+                            market, len(normal_market_features))
                 self.ood_detectors[market].fit(normal_market_features)
-                self._is_fitted[market] = True
-                logger.info("Firewall [%s] fit complete.", market)
+                
+            self._is_fitted[market] = True
             return self
 
     # -----------------------------------------------------------------

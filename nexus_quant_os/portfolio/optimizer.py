@@ -16,7 +16,7 @@ class PortfolioOptimizer:
     def __init__(self, max_sector_exposure: float = 0.3):
         self.max_sector_exposure = max_sector_exposure
         
-    def calculate_weights(self, signals: Dict[str, float], volatilities: Dict[str, float], sectors: Dict[str, str], volumes: Dict[str, int] = None, market_caps: Dict[str, float] = None) -> Dict[str, float]:
+    def calculate_weights(self, signals: Dict[str, float], volatilities: Dict[str, float], sectors: Dict[str, str], volumes: Dict[str, int] = None, market_caps: Dict[str, float] = None, current_date: str = None, forced_cover_dates: Dict[str, str] = None) -> Dict[str, float]:
         """
         計算 HRP 權重，並處理行業中立、殭屍股過濾、與不對稱放空。
         
@@ -25,6 +25,8 @@ class PortfolioOptimizer:
         :param sectors: {ticker: sector_name}
         :param volumes: {ticker: recent_avg_volume}
         :param market_caps: {ticker: market_cap_in_ntd}
+        :param current_date: YYYY-MM-DD
+        :param forced_cover_dates: {ticker: "YYYY-MM-DD"}
         :return: {ticker: target_weight}
         """
         if not signals:
@@ -32,6 +34,7 @@ class PortfolioOptimizer:
             
         volumes = volumes or {}
         market_caps = market_caps or {}
+        forced_cover_dates = forced_cover_dates or {}
             
         inv_vol = {}
         total_inv_vol = 0.0
@@ -51,8 +54,20 @@ class PortfolioOptimizer:
                     continue
                 # TODO: 扣除年化 4% 借券成本 (Borrow Fee)
                 
+            # 強制回補軋空地獄防禦 (Mandatory Short-Covering Squeeze)
+            if score < 0 and current_date and forced_cover_dates:
+                cover_date = forced_cover_dates.get(ticker)
+                if cover_date:
+                    import datetime
+                    c_dt = datetime.datetime.strptime(current_date, "%Y-%m-%d").date()
+                    f_dt = datetime.datetime.strptime(cover_date, "%Y-%m-%d").date()
+                    days_to_cover = (f_dt - c_dt).days
+                    if 0 <= days_to_cover < 6:
+                        logger.warning(f"FORCED_COVER_EVENT: {ticker} squeeze risk! Mandatory cover date in {days_to_cover} days. Shorting forbidden.")
+                        continue
+                
             if score <= 0:
-                continue # 目前系統基礎為做多
+                continue # 目前系統基礎為做多 (長線做多為主)
                 
             vol = volatilities.get(ticker, 0.02)
             if vol == 0:
@@ -91,7 +106,9 @@ class PortfolioOptimizer:
             else:
                 final_weights[ticker] = w
                 
-        # 正規化回 1.0 (扣除 Convexity Hedger 的 1.5% 後，應該正規化到 0.985)
-        # 留給 ConvexityHedger 與現金管理
+        # 正規化回 1.0
+        total_w = sum(final_weights.values())
+        if total_w > 0:
+            final_weights = {ticker: w / total_w for ticker, w in final_weights.items()}
         
         return final_weights

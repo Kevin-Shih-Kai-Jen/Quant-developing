@@ -66,12 +66,30 @@ class ExecutionEngine:
         if open_p is None or high_p is None or low_p is None or volume is None:
             order.status = "REJECTED_NO_DATA"
             return order
+            
+        prev_close = self._data_feed.get_price(ticker, t_plus_1_date, "PrevClose")
+        median_v_30 = getattr(self._data_feed, "get_median_volume", lambda t, d: volume)(ticker, t_plus_1_date)
 
-        # 1. 漲跌停鎖死拒絕 (Limit Lock Reject)
-        if high_p == low_p:
-            order.status = "REJECTED_LIMIT_LOCK"
-            logger.warning(f"Order REJECTED_LIMIT_LOCK: {ticker} on {t_plus_1_date} (High == Low).")
-            return order
+        is_buy = order.amount > 0
+        target_shares = abs(order.amount)
+
+        # 1. 非對稱漲跌停鎖死拒絕 (Asymmetric Limit-Lock Rejection)
+        if high_p == low_p and prev_close is not None:
+            # 台灣 2015 年後漲跌停為 10%，容許小數點誤差 (0.095)
+            is_limit_up = (high_p > prev_close * 1.095)
+            is_limit_down = (high_p < prev_close * 0.905)
+            
+            # 漲停買不到
+            if is_buy and is_limit_up:
+                order.status = "REJECTED_LIMIT_LOCK_UP"
+                logger.warning(f"Order REJECTED: Cannot buy {ticker} at Limit-Up lock.")
+                return order
+            # 跌停賣不掉
+            elif not is_buy and is_limit_down:
+                order.status = "REJECTED_LIMIT_LOCK_DOWN"
+                logger.warning(f"Order REJECTED: Cannot sell {ticker} at Limit-Down lock.")
+                return order
+            # 反之 (跌停買進，漲停賣出)，流動性極佳，放行！
 
         # 2. 決定執行價格
         if order.order_type == "LOW_CATCH":
@@ -84,13 +102,17 @@ class ExecutionEngine:
                 order.status = "REJECTED_NO_VWAP"
                 return order
 
-        # 3. 流動性參與率防護 (Volume Participation Cap)
-        # 台股 volume 通常是「股」數或「張」數？yf 是股數，FinMind 也是股數。
-        max_allowed_shares = int(volume * MAX_PARTICIPATION_RATE)
+        # 3. 高股息 ETF 假量封殺 (Dual-Kill Threshold)
+        # 基本面豁免 (Fundamental Exemption)：這裡預設先看有沒有帶有強烈 Alpha 訊號
+        # 實務上要檢查 AIAnalyst 是否標記了財報突破
+        has_fundamental_catalyst = getattr(order, "ai_score", 0.0) > 0.8 
         
-        # 決定方向
-        is_buy = order.amount > 0
-        target_shares = abs(order.amount)
+        effective_volume = volume
+        if volume > median_v_30 * 3 and not has_fundamental_catalyst:
+            logger.warning(f"ETF Mirage Detected for {ticker}! Volume {volume} > 3x Median {median_v_30}. Applying Dual-Kill.")
+            effective_volume = median_v_30
+            
+        max_allowed_shares = int(effective_volume * MAX_PARTICIPATION_RATE)
 
         # 3.5 【升級九：毒性訂單流攔截】
         if not self.check_ofi(ticker, t_plus_1_date, is_buy):
@@ -116,33 +138,56 @@ class ExecutionEngine:
             return order
 
         # 5. 【升級三：平方根市場衝擊模型】(Square-Root Impact)
-        # Slippage = Base_Fee + sigma * sqrt(Order_Size / Daily_Volume)
-        base_fee = 0.001425 if market == "TW" else 0.0
-        # 為了簡化，此處假設日波動率 sigma 為 2% (0.02)。實務上應從 DataLake 取真實 volatility。
-        sigma = 0.02
+        # Slippage = sigma * sqrt(Order_Size / Daily_Volume)
+        sigma = getattr(self._data_feed, "get_volatility", lambda t, d: 0.02)(ticker, t_plus_1_date) or 0.02
         
-        # 計算參與率的平方根
-        participation_ratio = actual_shares / max(volume, 1)
+        # 計算參與率的平方根 (使用 effective_volume)
+        participation_ratio = actual_shares / max(effective_volume, 1)
         impact_penalty = sigma * math.sqrt(participation_ratio)
-        total_slippage_rate = base_fee + impact_penalty
+        total_slippage_rate = impact_penalty
+        
+        # 6. 【跳動檔位煉金術防禦】(Tick-Size Rounding Enforcement)
+        def round_tick_size(price: float, is_buy: bool, market: str) -> float:
+            if market == "US":
+                # 美股最小跳動為 1 美分
+                tick = 0.01
+            else:
+                if price < 10: tick = 0.01
+                elif price < 50: tick = 0.05
+                elif price < 100: tick = 0.1
+                elif price < 500: tick = 0.5
+                elif price < 1000: tick = 1.0
+                else: tick = 5.0
+            
+            if is_buy:
+                return math.ceil(price / tick) * tick
+            else:
+                return math.floor(price / tick) * tick
+
+        raw_exec_price = exec_price * (1 + total_slippage_rate) if is_buy else exec_price * (1 - total_slippage_rate)
+        final_exec_price = round_tick_size(raw_exec_price, is_buy, market)
+        
+        # 獨立計算券商手續費
+        base_fee_rate = 0.001425 if market == "TW" else 0.0
         
         if is_buy:
-            # 買入時，滑價讓成本變高
-            final_exec_price = exec_price * (1 + total_slippage_rate)
+            # 買入時
             cost = actual_shares * final_exec_price
+            commission = cost * base_fee_rate
+            total_cost = cost + commission
             try:
-                self._portfolio.deduct_cash(currency, cost)
+                self._portfolio.deduct_cash(currency, total_cost)
             except InsufficientFundsException:
                 order.status = "REJECTED_INSUFFICIENT_FUNDS"
                 return order
                 
             self._portfolio.update_position(ticker, actual_shares, final_exec_price)
         else:
-            # 賣出時，滑價與證交稅讓收入變少
-            final_exec_price = exec_price * (1 - total_slippage_rate)
+            # 賣出時，證交稅讓收入變少
             revenue = actual_shares * final_exec_price
             sell_tax = revenue * TW_SELL_TAX if market == "TW" else 0.0
-            net_revenue = revenue - sell_tax
+            commission = revenue * base_fee_rate
+            net_revenue = revenue - sell_tax - commission
             
             try:
                 self._portfolio.update_position(ticker, -actual_shares, final_exec_price)
