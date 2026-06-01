@@ -1,7 +1,8 @@
 """
-alpha_hunter/ai_analyst.py — LLM 深度分析
+alpha_hunter/ai_analyst.py — LLM 深度分析 (The Abyss Edition)
 
-使用 Gemini Flash 分析公司的 MD&A、風險因子、催化劑。
+【最高機密升級七：LLM 認知不確定性量化 (Self-Consistency Ensemble)】
+使用 Gemini Flash 進行 5 次平行採樣，計算資訊熵。高熵（幻覺分歧）直接丟棄。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import math
 import time
 import threading
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import requests
 
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class AIAnalyst:
-    """LLM 深度分析師。"""
+    """LLM 深度分析師 - 搭載深淵級不確定性防禦。"""
 
     _ANALYSIS_PROMPT = '''You are a senior equity research analyst. Analyze the following company filing excerpts for {ticker}.
 
@@ -38,8 +39,8 @@ PROVIDE YOUR ANALYSIS AS A JSON OBJECT with exactly these fields:
   "ai_score": <float -1 to 1, overall outlook>,
   "confidence": <float 0 to 1>,
   "summary": "<200 words max, key findings>",
-  "key_risks": ["<risk1>", "<risk2>", ...],
-  "growth_catalysts": ["<catalyst1>", "<catalyst2>", ...],
+  "key_risks": ["<risk1>", "<risk2>"],
+  "growth_catalysts": ["<catalyst1>", "<catalyst2>"],
   "has_new_product": <bool>,
   "has_ma_activity": <bool>,
   "has_market_expansion": <bool>,
@@ -49,11 +50,12 @@ PROVIDE YOUR ANALYSIS AS A JSON OBJECT with exactly these fields:
 
 Output ONLY valid JSON. No markdown, no explanation.
 {tw_context}
+{temporal_anchoring}
 
---- MD&A EXCERPT (OR ATTACHED PDF DATA) ---
+--- MD&A EXCERPT ---
 {mda_text}
 
---- RISK FACTORS EXCERPT ---
+--- RISK FACTORS ---
 {risk_text}
 
 --- RECENT NEWS ---
@@ -65,11 +67,13 @@ Output ONLY valid JSON. No markdown, no explanation.
         model: str = "gemini-2.0-flash",
         timeout: float = LLM_TIMEOUT,
         max_retries: int = LLM_MAX_RETRIES,
+        n_ensemble: int = 5,  # 深淵級升級：自洽性抽樣次數
     ) -> None:
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self._model = model
         self._timeout = timeout
         self._max_retries = max_retries
+        self._n_ensemble = n_ensemble
         self._rate_lock = threading.Lock()
         self._last_request_time: float = 0.0
         self._session = requests.Session()
@@ -78,95 +82,30 @@ Output ONLY valid JSON. No markdown, no explanation.
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         if not self._api_key:
-            logger.warning("AIAnalyst: No API key provided. Analysis will return neutral.")
+            logger.warning("AIAnalyst: No API key provided.")
 
-    def analyze(
-        self,
-        ticker: str,
-        mda_text: str = "",
-        risk_text: str = "",
-        recent_news: list[str] | None = None,
-    ) -> AIAnalysis:
-        """分析一家公司。"""
-        ticker = ticker.upper()
-        default_analysis = AIAnalysis(ticker=ticker)
-        
-        # ── 快取檢查 ──
-        cache_file = self._cache_dir / f"{ticker}.json"
-        if cache_file.exists():
-            try:
-                mtime = datetime.fromtimestamp(
-                    cache_file.stat().st_mtime, tz=timezone.utc
-                )
-                age = datetime.now(timezone.utc) - mtime
-                if timedelta(0) <= age < self._cache_ttl:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        cached = json.load(f)
-                    return AIAnalysis(
-                        ticker=ticker,
-                        management_tone=cached.get("management_tone", 0.0),
-                        ai_score=cached.get("ai_score", 0.0),
-                        confidence=cached.get("confidence", 0.0),
-                        summary=str(cached.get("summary", "")),
-                        key_risks=cached.get("key_risks", []),
-                        growth_catalysts=cached.get("growth_catalysts", []),
-                        has_new_product=cached.get("has_new_product", False),
-                        has_ma_activity=cached.get("has_ma_activity", False),
-                        has_market_expansion=cached.get("has_market_expansion", False),
-                        has_cost_restructuring=cached.get("has_cost_restructuring", False),
-                        has_regulatory_risk=cached.get("has_regulatory_risk", False),
-                    )
-            except Exception as e:
-                logger.warning("AI cache read failed for %s: %s", ticker, e)
-                try:
-                    cache_file.unlink()
-                except Exception:
-                    pass
+    def _mask_entity(self, text: str, ticker: str) -> str:
+        """【升級一：實體盲化協議】"""
+        if not text:
+            return text
+        masked_text = text.replace(ticker, "[Company_A]")
+        import re
+        match = re.search(r'^(\d+)', ticker)
+        if match:
+            digits = match.group(1)
+            masked_text = masked_text.replace(digits, "[Company_A]")
+        return masked_text
 
+    def _call_llm_once(self, prompt: str, is_pdf: bool, mda_text: str) -> Optional[Dict[str, Any]]:
+        """執行單次 LLM 請求"""
         if not self._api_key:
-            return default_analysis
-            
-        from .ticker_resolver import TickerResolver
-        market = TickerResolver.detect_market(ticker)
-        
-        tw_context = ""
-        if market == "TW":
-            from .tw_news_fetcher import TWNewsFetcher
-            tw_context = (
-                "\n" + TWNewsFetcher.TW_MARKET_CONTEXT + "\n"
-                "CRITICAL OVERRIDE: 分析台灣股票時，若遇到『長老吃筍』，請翻譯為『政府八大行庫停損』；"
-                "『亮燈』或『亮紅燈』在股價或業績語境中代表『漲停板 Maximum Bullish』，切勿當作負面辭彙。\n"
-            )
-
-        news_text = "\n".join(recent_news) if recent_news else "None"
-        news_trunc = news_text[:LLM_MAX_INPUT_CHARS]
-
-        # ── 檢查是否為 PDF 檔案 (多模態支援) ──
-        is_pdf = isinstance(mda_text, str) and mda_text.lower().endswith(".pdf") and os.path.exists(mda_text)
-        
-        if is_pdf:
-            mda_trunc = f"Attached PDF document: {os.path.basename(mda_text)}"
-            risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
-        else:
-            mda_trunc = mda_text[:LLM_MAX_INPUT_CHARS]
-            risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
-
-        prompt = self._ANALYSIS_PROMPT.format(
-            ticker=ticker,
-            tw_context=tw_context,
-            mda_text=mda_trunc,
-            risk_text=risk_trunc,
-            news_text=news_trunc
-        )
+            return None
 
         result_json = None
-        
         if is_pdf:
-            # ── 多模態 PDF 解析流程 (使用 google.generativeai SDK) ──
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=self._api_key)
-                # 使用 Gemini 1.5 Pro (Multimodal)
                 model_obj = genai.GenerativeModel("gemini-1.5-pro")
                 
                 with self._rate_lock:
@@ -175,25 +114,14 @@ Output ONLY valid JSON. No markdown, no explanation.
                         time.sleep(4.0 - (now - self._last_request_time))
                     self._last_request_time = time.monotonic()
 
-                logger.info("Uploading PDF to Gemini Vision: %s", mda_text)
                 pdf_file = genai.upload_file(path=mda_text)
-                
-                # 提示詞中加入特別指示
-                multimodal_prompt = (
-                    f"{prompt}\n\n這是一份法說會簡報 PDF，請直接讀取裡面的圖表與文字，並總結出："
-                    "1. 下季營收指引、2. 毛利率預測、3. 資本支出。"
-                )
-                
-                resp = model_obj.generate_content([multimodal_prompt, pdf_file])
+                resp = model_obj.generate_content([prompt, pdf_file], generation_config=genai.types.GenerationConfig(temperature=0.7))
                 text = resp.text.strip()
-                
-                # 分析完畢後刪除雲端檔案避免佔用配額
                 try:
                     pdf_file.delete()
-                except Exception as e:
-                    logger.warning("Failed to delete PDF from Gemini: %s", e)
+                except Exception:
+                    pass
                 
-                # 解析 JSON
                 import re as _re
                 md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
                 if md_match:
@@ -204,18 +132,15 @@ Output ONLY valid JSON. No markdown, no explanation.
                     if brace_start != -1 and brace_end > brace_start:
                         text = text[brace_start:brace_end + 1]
                 result_json = json.loads(text)
-                
             except Exception as e:
-                logger.warning("Gemini Multimodal Vision failed for %s: %s", ticker, e)
-                # Fallback 到沒有 PDF 的狀態
-                pass
+                logger.warning("Gemini Vision failed: %s", e)
                 
         if not is_pdf or not result_json:
-            # ── 純文字解析流程 (使用 REST API) ──
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}"
+            # 【升級七】強制 Temperature=0.7 引入擾動
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": LLM_TEMPERATURE}
+                "generationConfig": {"temperature": 0.7}
             }
 
             for attempt in range(self._max_retries):
@@ -228,18 +153,11 @@ Output ONLY valid JSON. No markdown, no explanation.
                 try:
                     resp = self._session.post(url, json=payload, timeout=self._timeout)
                     if resp.status_code == 429:
-                        if attempt == 0:
-                            logger.warning("Gemini 429, short backoff 5s (attempt 1)")
-                            time.sleep(5)
-                            continue
-                        else:
-                            logger.warning("Gemini 429 persists, skipping AI for %s", ticker)
-                            break
+                        time.sleep(5)
+                        continue
                     resp.raise_for_status()
                     data = resp.json()
-                    
-                    text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    text = text.strip()
+                    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
                     import re as _re
                     md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
                     if md_match:
@@ -251,90 +169,132 @@ Output ONLY valid JSON. No markdown, no explanation.
                             text = text[brace_start:brace_end + 1]
                     result_json = json.loads(text)
                     break
-                except requests.RequestException as e:
-                    logger.warning("AIAnalyst request failed (attempt %d): %s", attempt+1, e)
+                except Exception as e:
+                    logger.warning("API attempt %d failed: %s", attempt+1, e)
                     time.sleep(2 ** attempt)
-                except (KeyError, IndexError, ValueError) as e:
-                    logger.warning("AIAnalyst parse failed: %s", e)
-                    break
-                
-        if not result_json:
-            return default_analysis
 
-        # 驗證數值範圍
-        def safe_float(val, min_val, max_val, default):
+        return result_json
+
+    def analyze(
+        self,
+        ticker: str,
+        mda_text: str = "",
+        risk_text: str = "",
+        recent_news: list[str] | None = None,
+        backtest_date: str = "",
+    ) -> AIAnalysis:
+        ticker = ticker.upper()
+        default_analysis = AIAnalysis(ticker=ticker)
+        
+        # 快取檢查...
+        cache_file = self._cache_dir / f"{ticker}_analysis_{backtest_date or 'latest'}.json"
+        if cache_file.exists():
             try:
-                v = float(val)
-                if math.isnan(v) or math.isinf(v):
-                    return default
-                return max(min_val, min(max_val, v))
-            except (TypeError, ValueError):
-                return default
-
-        def safe_bool(val):
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.lower() in ("true", "1", "yes")
-            return False
-
-        def safe_list(val, max_items=5, max_chars=200):
-            if not isinstance(val, list):
-                return []
-            return [str(item)[:max_chars] for item in val[:max_items]]
-
-        analysis = AIAnalysis(
-            ticker=ticker,
-            management_tone=safe_float(result_json.get("management_tone"), -1.0, 1.0, 0.0),
-            ai_score=safe_float(result_json.get("ai_score"), -1.0, 1.0, 0.0),
-            confidence=safe_float(result_json.get("confidence"), 0.0, 1.0, 0.0),
-            summary=str(result_json.get("summary", ""))[:200],
-            key_risks=safe_list(result_json.get("key_risks")),
-            growth_catalysts=safe_list(result_json.get("growth_catalysts")),
-            has_new_product=safe_bool(result_json.get("has_new_product")),
-            has_ma_activity=safe_bool(result_json.get("has_ma_activity")),
-            has_market_expansion=safe_bool(result_json.get("has_market_expansion")),
-            has_cost_restructuring=safe_bool(result_json.get("has_cost_restructuring")),
-            has_regulatory_risk=safe_bool(result_json.get("has_regulatory_risk"))
-        )
-
-        # Edge Case #47: 地緣政治脫敏
-        geopolitical_keywords = ["軍演", "共軍", "台海危機", "兩岸緊張"]
-        if news_text and any(kw in news_text for kw in geopolitical_keywords):
-            if analysis.ai_score < 0:
-                logger.info("Edge Case #47: 偵測到地緣政治關鍵字，衰減負面 ai_score %f -> %f", analysis.ai_score, analysis.ai_score * 0.2)
-                analysis.ai_score *= 0.2
-            if analysis.management_tone < 0:
-                analysis.management_tone *= 0.2
-
-        # ── 成功後寫入快取 ──
-        try:
-            cache_data = {
-                "ticker": ticker,
-                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-                "management_tone": analysis.management_tone,
-                "ai_score": analysis.ai_score,
-                "confidence": analysis.confidence,
-                "summary": analysis.summary,
-                "key_risks": analysis.key_risks,
-                "growth_catalysts": analysis.growth_catalysts,
-                "has_new_product": analysis.has_new_product,
-                "has_ma_activity": analysis.has_ma_activity,
-                "has_market_expansion": analysis.has_market_expansion,
-                "has_cost_restructuring": analysis.has_cost_restructuring,
-                "has_regulatory_risk": analysis.has_regulatory_risk,
-            }
-            import uuid
-            tmp = cache_file.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cache_data, f)
-            tmp.replace(cache_file)
-        except Exception as e:
-            logger.warning("AI cache write failed for %s: %s", ticker, e)
-            try:
-                if tmp.exists():
-                    tmp.unlink()
+                mtime = datetime.fromtimestamp(cache_file.stat().st_mtime, tz=timezone.utc)
+                age = datetime.now(timezone.utc) - mtime
+                if age < self._cache_ttl:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cached = json.load(f)
+                    return AIAnalysis(**cached)
             except Exception:
                 pass
 
+        if not self._api_key:
+            return default_analysis
+            
+        from .ticker_resolver import TickerResolver
+        market = TickerResolver.detect_market(ticker)
+        tw_context = ""
+        if market == "TW":
+            tw_context = "CRITICAL OVERRIDE: 亮燈=漲停板, 長老吃筍=八大行庫停損。\n"
+
+        temporal_anchoring = f"\nCRITICAL: You are operating in {backtest_date}. DO NOT USE FUTURE KNOWLEDGE.\n" if backtest_date else ""
+
+        is_pdf = isinstance(mda_text, str) and mda_text.lower().endswith(".pdf") and os.path.exists(mda_text)
+        
+        mda_trunc = f"Attached PDF: {os.path.basename(mda_text)}" if is_pdf else mda_text[:LLM_MAX_INPUT_CHARS]
+        risk_trunc = risk_text[:LLM_MAX_INPUT_CHARS]
+        news_trunc = ("\n".join(recent_news) if recent_news else "None")[:LLM_MAX_INPUT_CHARS]
+            
+        mda_trunc = self._mask_entity(mda_trunc, ticker)
+        risk_trunc = self._mask_entity(risk_trunc, ticker)
+        news_trunc = self._mask_entity(news_trunc, ticker)
+
+        prompt = self._ANALYSIS_PROMPT.format(
+            ticker="[Company_A]",
+            temporal_anchoring=temporal_anchoring,
+            tw_context=tw_context,
+            mda_text=mda_trunc,
+            risk_text=risk_trunc,
+            news_text=news_trunc
+        )
+
+        # 【升級七：自洽性抽樣與溫度擾動】
+        results = []
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self._n_ensemble) as executor:
+            futures = [executor.submit(self._call_llm_once, prompt, is_pdf, mda_text) for _ in range(self._n_ensemble)]
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res:
+                    results.append(res)
+
+        if not results:
+            return default_analysis
+
+        # 計算資訊熵 (Entropy Calculation)
+        # 對布林值特徵計算多數決與熵
+        features = ["has_new_product", "has_ma_activity", "has_market_expansion", "has_cost_restructuring", "has_regulatory_risk"]
+        entropies = []
+        final_features = {}
+        
+        for feat in features:
+            trues = sum(1 for r in results if r.get(feat, False))
+            p = trues / len(results)
+            final_features[feat] = (p >= 0.5) # 多數決
+            # 二元熵
+            if p == 0 or p == 1:
+                e = 0.0
+            else:
+                e = -p * math.log2(p) - (1 - p) * math.log2(1 - p)
+            entropies.append(e)
+
+        avg_entropy = sum(entropies) / len(entropies) if entropies else 0.0
+        
+        # 平均數值分數
+        avg_ai_score = sum(r.get("ai_score", 0.0) for r in results) / len(results)
+        avg_tone = sum(r.get("management_tone", 0.0) for r in results) / len(results)
+
+        # 毒藥檢測：如果平均資訊熵大於 0.8 (代表分歧極大)
+        if avg_entropy > 0.8:
+            logger.warning(f"High Entropy detected for {ticker}: {avg_entropy:.2f}. Forcing AI score to 0 (Neutral).")
+            avg_ai_score = 0.0
+            avg_tone = 0.0
+
+        analysis = AIAnalysis(
+            ticker=ticker,
+            management_tone=avg_tone,
+            ai_score=avg_ai_score,
+            confidence=1.0 - avg_entropy, # 信心度反比於熵
+            summary=results[0].get("summary", "")[:200], # 取第一個 summary
+            key_risks=results[0].get("key_risks", [])[:5],
+            growth_catalysts=results[0].get("growth_catalysts", [])[:5],
+            **final_features
+        )
+
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(analysis.dict(), f)
+        except Exception:
+            pass
+
         return analysis
+
+    def invalidate_cache(self, ticker: str):
+        import glob
+        pattern = os.path.join(self._cache_dir, f"{ticker}_analysis_*.json")
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
