@@ -333,8 +333,6 @@ class CombinedPortfolioLoss(nn.Module):
 # 數據集構建：橫截面日度格式
 # ═════════════════════════════════════════════════════════════════════
 
-    return df
-
 
 def build_daily_dataset(
     aligned_df: pd.DataFrame,
