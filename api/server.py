@@ -37,7 +37,7 @@ import torch
 
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
 from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
-from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+from nexus_quant_os.portfolio.cvxpy_optimizer import PortfolioOptimizer, OptimizerConfig
 from nexus_quant_os.monitoring.health_check import check_weight_sanity, Severity
 from nexus_quant_os.llm.sentiment_aggregator import SentimentAggregator
 from nexus_quant_os.llm.news_fetcher import NewsFetcher
