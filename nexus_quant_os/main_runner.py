@@ -156,7 +156,87 @@ class AbyssRunner:
         logger.info("\nGenerating Tearsheet...")
         tearsheet = CPCVTearsheet(daily_navs=nav_history, daily_convexity_payoffs=payoff_history)
         tearsheet.generate_report()
+
+    def run_large_scale_test(self, days: int = 1250):
+        """
+        執行大規模壓力測試 (例如 5 年期 = 1250 個交易日)
+        使用蒙地卡羅隨機漫步產生市場跌幅，並注入黑天鵝。
+        """
+        logger.info(f"Starting Large-Scale Backtest ({days} Days)...")
+        
+        # 重置資金
+        self.portfolio_manager.set_cash(twd=30_000_000, usd=0.0)
+        self.portfolio_manager._positions.clear()
+        self.convexity_hedger = ConvexityHedger(target_allocation=0.015)
+        
+        nav_history = []
+        payoff_history = []
+        
+        import datetime
+        start_date = datetime.date(2015, 1, 1)
+        
+        # 關閉 INFO level logger 避免日誌炸裂
+        logger.setLevel(logging.WARNING)
+        
+        for i in range(days):
+            current_date = (start_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            self.current_date = current_date
+            
+            # 隨機產生市場波動 (常態分佈)
+            market_drop = random.gauss(0.0005, 0.01) # 預設微幅向上，日波動 1%
+            
+            # 注入黑天鵝 (1% 機率)
+            if random.random() < 0.01:
+                market_drop = random.uniform(-0.04, -0.08) # 崩盤 4% ~ 8%
+            
+            nav = self.portfolio_manager.get_nav(self.current_date)
+            
+            # 尾部避險扣血
+            bleed = self.convexity_hedger.allocate_hedge(nav)
+            if bleed > 0:
+                try:
+                    self.portfolio_manager.deduct_cash("TWD", bleed)
+                except:
+                    pass
+            
+            # 結算
+            payoff = self.convexity_hedger.process_market_crash(market_drop)
+            payoff_history.append(payoff)
+            if payoff > 0:
+                self.portfolio_manager.add_cash("TWD", payoff)
+                
+            # 產生 AI 訊號
+            if market_drop < -0.03:
+                action, score = "LOW_CATCH", 0.9
+            elif market_drop > 0.02:
+                action, score = "SELL", 0.0
+            else:
+                action, score = "STRONG_BUY", 0.6
+                
+            signal = AlphaSignalEvent(
+                perm_id="P_2330", ticker="2330.TW", date=self.current_date, action=action, ai_score=score
+            )
+            EventBus.publish("SIGNAL_GENERATED", signal)
+            
+            final_nav = self.portfolio_manager.get_nav(self.current_date)
+            nav_history.append(final_nav)
+
+            # 模擬股票隨市場漲跌 (強制修改 portfolio 的部位價格)
+            for ticker, pos in self.portfolio_manager._positions.items():
+                if pos.shares > 0:
+                    # 這是黑魔法，為了模擬回測帳面價值隨市場波動
+                    self.data_feed.prices[ticker] = self.data_feed.prices.get(ticker, 100.0) * (1 + market_drop)
+
+        # 跑完後恢復 logger level
+        logger.setLevel(logging.INFO)
+        logger.info(f"\nCompleted {days} Days Simulation!")
+        logger.info(f"Final NAV: {nav_history[-1]:,.2f} TWD")
+        
+        logger.info("\nGenerating Large-Scale Tearsheet...")
+        tearsheet = CPCVTearsheet(daily_navs=nav_history, daily_convexity_payoffs=payoff_history)
+        tearsheet.generate_report()
             
 if __name__ == "__main__":
     runner = AbyssRunner()
-    runner.run_smoke_test()
+    # runner.run_smoke_test()
+    runner.run_large_scale_test(1250)
