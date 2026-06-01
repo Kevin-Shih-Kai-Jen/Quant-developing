@@ -39,8 +39,8 @@ PROVIDE YOUR ANALYSIS AS A JSON OBJECT with exactly these fields:
   "ai_score": <float -1 to 1, overall outlook>,
   "confidence": <float 0 to 1>,
   "summary": "<200 words max, key findings>",
-  "key_risks": ["<risk1>", "<risk2>"],
-  "growth_catalysts": ["<catalyst1>", "<catalyst2>"],
+  "key_risks": ["<[FACT] or [PROJECTION]> <risk1>", "<[FACT] or [PROJECTION]> <risk2>"],
+  "growth_catalysts": ["<[FACT] or [PROJECTION]> <catalyst1>", "<[FACT] or [PROJECTION]> <catalyst2>"],
   "has_new_product": <bool>,
   "has_ma_activity": <bool>,
   "has_market_expansion": <bool>,
@@ -85,7 +85,7 @@ Output ONLY valid JSON. No markdown, no explanation.
             logger.warning("AIAnalyst: No API key provided.")
 
     def _mask_entity(self, text: str, ticker: str) -> str:
-        """【升級一：實體盲化協議】"""
+        """【升級一：實體盲化協議】與【升級九：絕對數字的「實體逆向工程」防禦】"""
         if not text:
             return text
         masked_text = text.replace(ticker, "[Company_A]")
@@ -94,6 +94,11 @@ Output ONLY valid JSON. No markdown, no explanation.
         if match:
             digits = match.group(1)
             masked_text = masked_text.replace(digits, "[Company_A]")
+            
+        # Financial Z-Scoring & Blurring: 物理消除財報中的絕對數字刻度
+        # 將「營收 2,161,736 百萬」模糊化
+        masked_text = re.sub(r'\$?\d{1,3}(,\d{3})+(\.\d+)?\s*(百萬元|千元|元|億|兆|billion|million|B|M|K)', '[Relative_Z_Score_Amount]', masked_text)
+        
         return masked_text
 
     def _call_llm_once(self, prompt: str, is_pdf: bool, mda_text: str) -> Optional[Dict[str, Any]]:
@@ -270,6 +275,14 @@ Output ONLY valid JSON. No markdown, no explanation.
             logger.warning(f"High Entropy detected for {ticker}: {avg_entropy:.2f}. Forcing AI score to 0 (Neutral).")
             avg_ai_score = 0.0
             avg_tone = 0.0
+            
+        # Epistemic Modality Blur: 預測懲罰
+        catalysts = results[0].get("growth_catalysts", [])[:5]
+        projection_count = sum(1 for c in catalysts if "[PROJECTION]" in c.upper())
+        if projection_count > 0:
+            penalty = 0.3
+            avg_ai_score -= penalty
+            logger.info(f"Epistemic Modality penalty applied to {ticker}: {projection_count} [PROJECTION]s found. Score reduced by {penalty}.")
 
         analysis = AIAnalysis(
             ticker=ticker,

@@ -16,28 +16,45 @@ class PortfolioOptimizer:
     def __init__(self, max_sector_exposure: float = 0.3):
         self.max_sector_exposure = max_sector_exposure
         
-    def calculate_weights(self, signals: Dict[str, float], volatilities: Dict[str, float], sectors: Dict[str, str]) -> Dict[str, float]:
+    def calculate_weights(self, signals: Dict[str, float], volatilities: Dict[str, float], sectors: Dict[str, str], volumes: Dict[str, int] = None, market_caps: Dict[str, float] = None) -> Dict[str, float]:
         """
-        計算 HRP 權重，並處理行業中立。
+        計算 HRP 權重，並處理行業中立、殭屍股過濾、與不對稱放空。
         
         :param signals: {ticker: ai_final_score}
         :param volatilities: {ticker: daily_volatility}
         :param sectors: {ticker: sector_name}
+        :param volumes: {ticker: recent_avg_volume}
+        :param market_caps: {ticker: market_cap_in_ntd}
         :return: {ticker: target_weight}
         """
         if not signals:
             return {}
             
-        # 1. 簡單 Risk Parity 模擬 (真正的 HRP 需要 scipy clustering 算 covariance tree)
-        # 這裡用 Inverse Volatility 作為防呆替代方案 (Naïve Risk Parity)
+        volumes = volumes or {}
+        market_caps = market_caps or {}
+            
         inv_vol = {}
         total_inv_vol = 0.0
         
         for ticker, score in signals.items():
-            if score <= 0:
-                continue # 只做多
+            # 殭屍股防禦 (Zero_Volume_Penalty)
+            vol_last_3_days = volumes.get(ticker, 1000)
+            if vol_last_3_days == 0:
+                logger.warning(f"Zombie Asset Trap! {ticker} has 0 volume. Setting volatility to Infinity.")
+                continue # Weight becomes 0
                 
-            vol = volatilities.get(ticker, 0.02) # 預設 2%
+            # 不對稱放空限制 (HTB Filter)
+            if score < -0.5: # 假設強烈看空
+                mcap = market_caps.get(ticker, 0)
+                if mcap < 10_000_000_000: # 小於 100 億
+                    logger.warning(f"HTB Filter: Cannot short {ticker} (Market Cap < 10B). Skipping.")
+                    continue
+                # TODO: 扣除年化 4% 借券成本 (Borrow Fee)
+                
+            if score <= 0:
+                continue # 目前系統基礎為做多
+                
+            vol = volatilities.get(ticker, 0.02)
             if vol == 0:
                 vol = 0.02
                 

@@ -26,6 +26,7 @@ class PortfolioManager:
     def __init__(self, data_feed):
         self._data_feed = data_feed
         self._cash: Dict[str, float] = {"USD": 0.0, "TWD": 0.0}
+        self._transit_cash: list = [] # 儲存 {pay_date, currency, amount}
         self._positions: Dict[str, Position] = {}
         
     def uses(self, feature: str) -> bool:
@@ -80,21 +81,58 @@ class PortfolioManager:
             if pos.shares == 0:
                 pos.avg_price = 0.0
 
-    def process_dividend(self, ticker: str, dps: float, currency: str):
-        """處理除息：cash += shares * dps。"""
+    def process_dividend(self, ticker: str, dps: float, currency: str, ex_date: str, pay_date: str = None):
+        """
+        處理除息 (DRIP Settlement Illusion 防禦)
+        除息日只產生應收帳款，直到 pay_date 才會轉入可用資金。
+        如果沒有提供 pay_date，預設延遲 28 天。
+        """
         if ticker in self._positions:
             pos = self._positions[ticker]
             if pos.shares > 0:
                 dividend_amount = pos.shares * dps
-                self.add_cash(currency, dividend_amount)
-                logger.info(f"Dividend received for {ticker}: {dividend_amount} {currency}")
+                
+                if pay_date is None:
+                    import datetime
+                    ex_dt = datetime.datetime.strptime(ex_date, "%Y-%m-%d").date()
+                    pay_dt = ex_dt + datetime.timedelta(days=28)
+                    pay_date = pay_dt.strftime("%Y-%m-%d")
+                    
+                self._transit_cash.append({
+                    "pay_date": pay_date,
+                    "currency": currency.upper(),
+                    "amount": dividend_amount
+                })
+                logger.info(f"Dividend Ex-Date recorded for {ticker}: {dividend_amount} {currency}. Will settle on {pay_date}.")
+
+    def update_transit_cash(self, current_date: str):
+        """
+        每日推進時呼叫，將達到 Pay_Date 的在途資金解鎖。
+        """
+        still_in_transit = []
+        for item in self._transit_cash:
+            if item["pay_date"] <= current_date:
+                self.add_cash(item["currency"], item["amount"])
+                logger.info(f"Transit Cash Unlocked! {item['amount']} {item['currency']} settled on {current_date}.")
+            else:
+                still_in_transit.append(item)
+        self._transit_cash = still_in_transit
 
     def get_nav(self, date: str) -> float:
         """計算淨值 (TWD 為基準計算，假設固定匯率以簡化，或僅加總本幣)。
         這裡僅示範提取 Real_Close。
         """
+        self.update_transit_cash(date)
+        
         # 注意：實務上需有歷史匯率表。這裡簡單假設 1 USD = 30 TWD 計算近似總 NAV，僅作 Log 用。
         total_twd = self._cash["TWD"] + self._cash["USD"] * 30.0
+        
+        # 加上在途資金 (應收帳款也是淨值的一部分)
+        for item in self._transit_cash:
+            if item["currency"] == "USD":
+                total_twd += item["amount"] * 30.0
+            else:
+                total_twd += item["amount"]
         
         for ticker, pos in self._positions.items():
             if pos.shares > 0:
