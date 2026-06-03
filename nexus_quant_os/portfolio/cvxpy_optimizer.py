@@ -109,6 +109,8 @@ class PortfolioOptimizer:
         cov_matrix: np.ndarray,
         returns_history: np.ndarray | None = None,
         hmm_bear_prob: float = 0.0,
+        current_weights: dict[str, float] | None = None,
+        exec_config: dict | None = None,
     ) -> np.ndarray:
         """雙層優化主入口。
 
@@ -176,7 +178,7 @@ class PortfolioOptimizer:
                 expected_returns = 0.6 * expected_returns + 0.4 * hist_mean
 
             try:
-                weights = self._constrained_mvo(expected_returns, cov_matrix, moe_weights, hmm_bear_prob)
+                weights = self._constrained_mvo(expected_returns, cov_matrix, moe_weights, hmm_bear_prob, current_weights, exec_config)
             except Exception as e:
                 logger.warning(
                     "Constrained MVO 失敗(%s)，回退到 Risk Parity", e,
@@ -209,6 +211,8 @@ class PortfolioOptimizer:
         cov_matrix: np.ndarray,
         moe_weights: np.ndarray,
         hmm_bear_prob: float,
+        current_weights: dict[str, float] | None = None,
+        exec_config: dict | None = None,
     ) -> np.ndarray:
         """約束均值方差優化 (CVXPY + OSQP)。
 
@@ -218,6 +222,10 @@ class PortfolioOptimizer:
             預期報酬向量，shape [N]。
         cov_matrix : np.ndarray
             共變異數矩陣，shape [N, N]。
+        current_weights : dict[str, float] | None
+            目前各資產的真實持倉權重 (HODL 約束用)。
+        exec_config : dict | None
+            人類指令配置 (包含 blacklist, hodl_symbols, forced_positions)。
 
         Returns
         -------
@@ -236,26 +244,62 @@ class PortfolioOptimizer:
         mu_scale = np.abs(mu).max() + 1e-8
         mu_norm = mu / mu_scale
 
-        # 動態上限：Base + λ * max(0, Confidence - threshold)
+        # ── 1. 初始化上下限 ──
+        lower_bounds = np.zeros(N)
         upper_bounds = np.zeros(N)
-        for i in range(N):
+
+        # ── 2. 解析人類指令 (Shift-Left Constraints) ──
+        exec_config = exec_config or {}
+        blacklist = set(exec_config.get("blacklist") or [])
+        hodl_symbols = set(exec_config.get("hodl_symbols") or [])
+        forced_positions = exec_config.get("forced_positions") or []
+        current_weights = current_weights or {}
+
+        # 動態上限與強制約束
+        for i, symbol in enumerate(self.asset_names):
             conf = float(moe_weights[i])
             dyn_max = cfg.max_single_weight + cfg.dynamic_weight_lambda * max(0.0, conf - 0.80)
             dyn_max = min(dyn_max, 0.50)  # 絕對上限 50%
-            
-            # 針對特殊資產 (SHY, SH, PSQ)
-            if i in (self.idx_sh, self.idx_psq):
-                if hmm_bear_prob < 0.50:
-                    upper_bounds[i] = 0.0  # 非熊市禁止做空
-                else:
-                    upper_bounds[i] = 0.15 # 熊市允許單一反向 ETF 最多 15%
-            elif i == self.idx_shy:
-                upper_bounds[i] = 1.0  # 現金特權兜底
-            else:
-                upper_bounds[i] = dyn_max  # 多頭資產動態上限
+            upper_bounds[i] = dyn_max
+
+            # 🛑 數學約束 A：黑名單 (Blacklist) -> 鎖死上限為 0
+            if symbol in blacklist:
+                upper_bounds[i] = 0.0
+                lower_bounds[i] = 0.0
+                continue
+
+            # 🛡️ 數學約束 B：信仰持倉 (HODL) -> 下限鎖定為目前權重 (只准買不准賣)
+            if symbol in hodl_symbols:
+                w_curr = float(current_weights.get(symbol, 0.0))
+                lower_bounds[i] = w_curr
+                upper_bounds[i] = max(upper_bounds[i], w_curr)
+
+            # 📌 數學約束 C：強制買入 (Forced Positions)
+            for fp in forced_positions:
+                if fp.get("symbol") == symbol:
+                    min_w = float(fp.get("min_weight", 0.05))
+                    lower_bounds[i] = max(lower_bounds[i], min_w)
+                    upper_bounds[i] = max(upper_bounds[i], min_w)
+
+        # 針對特殊資產 (SHY, SH, PSQ)
+        if self.idx_sh != -1 and self.idx_sh not in blacklist:
+            upper_bounds[self.idx_sh] = 0.15 if hmm_bear_prob >= 0.50 else 0.0
+        if self.idx_psq != -1 and self.idx_psq not in blacklist:
+            upper_bounds[self.idx_psq] = 0.15 if hmm_bear_prob >= 0.50 else 0.0
+        if self.idx_shy != -1 and self.idx_shy not in blacklist:
+            upper_bounds[self.idx_shy] = 1.0  # 現金特權兜底
+
+        # ── 3. 可行性預檢 (Feasibility Pre-check) ──
+        # 避免 HODL + Forced 總和大於 100% 導致 Infeasible
+        lb_sum = np.sum(lower_bounds)
+        if lb_sum > 0.95:  # 留 5% 彈性
+            logger.warning("🚨 [Optimizer] lower_bounds 總和 (%.2f) 過高，執行等比降載以避免 Infeasible", lb_sum)
+            scale = 0.95 / lb_sum
+            lower_bounds = lower_bounds * scale
+            for i in range(N):
+                upper_bounds[i] = max(upper_bounds[i], lower_bounds[i])
 
         # 保證凸優化有解：確保所有資產上限總和大於等於 1.0
-        # (排除現金，因為現金已經是 1.0。若排除現金後風險資產總和小於 1.0，則等比放大)
         risk_asset_indices = [i for i in range(N) if i not in (self.idx_shy, self.idx_sh, self.idx_psq)]
         risk_bound_sum = sum(upper_bounds[i] for i in risk_asset_indices)
         if risk_bound_sum < 1.0 and risk_bound_sum > 0:
@@ -269,8 +313,9 @@ class PortfolioOptimizer:
         # 目標函數：最大化風險調整後報酬
         objective = cp.Maximize(mu_norm.T @ w - gamma * cp.quad_form(w, cov))
         
+        # ⚠️ 關鍵改變：將 w >= 0 改為 w >= lower_bounds
         constraints = [
-            w >= 0,
+            w >= lower_bounds,
             cp.sum(w) == 1.0,  # 強制 100% 資金分配 (含現金)
             w <= upper_bounds,
         ]
@@ -288,7 +333,8 @@ class PortfolioOptimizer:
         prob = cp.Problem(objective, constraints)
         try:
             # 🛡️ 裝甲：強制 5 秒內給出結果，不允許主程式被優化器卡死
-            prob.solve(solver=cp.OSQP, max_iter=4000, osqp_params={'time_limit': 5.0})
+            # 已經在先前的修復中移除了失效的 osqp_params key，現在直接傳遞 time_limit 給 cvxpy 1.3+ 版本的 API
+            prob.solve(solver=cp.OSQP, max_iter=4000, time_limit=5.0)
         except Exception as e:
             logger.error("CVXPY 求解超時或崩潰: %s", e)
             raise RuntimeError("CVXPY 求解失敗") from e # 拋給外層 Risk Parity 處理
@@ -389,6 +435,7 @@ class PortfolioOptimizer:
                 cov_matrix=cov,
                 returns_history=hist_window,
                 hmm_bear_prob=float(bp),
+                # Note: optimize_series usually does not have current_weights or exec_config context for historical steps.
             )
 
         logger.info(

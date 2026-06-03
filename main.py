@@ -54,6 +54,11 @@ Author : Nexus Quant OS — System Integration Division
 
 from __future__ import annotations
 
+import argparse
+import yaml
+from nexus_quant_os.live_trading.shadow_broker import ShadowBroker
+from nexus_quant_os.execution.futu_broker import FutuBroker
+
 import logging
 import os
 import sys
@@ -252,8 +257,22 @@ from nexus_quant_os.data_pipelines.feature_engineer import engineer_features
 # STEP 4–6: 主管線排程
 # ═════════════════════════════════════════════════════════════════════
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Nexus Quant OS — Core DAG Scheduler")
+    parser.add_argument("--dry-run", action="store_true", help="演習模式：使用影子券商，不發送真實委託")
+    return parser.parse_args()
+
 def run_pipeline() -> None:
     """執行 Nexus Quant OS 完整 DAG 管線。"""
+
+    args = parse_args()
+
+    # 1. 讀取人類高權限指令層
+    try:
+        with open("execution_config.yaml", "r") as f:
+            exec_config = yaml.safe_load(f)
+    except FileNotFoundError:
+        exec_config = {}
 
     SEP   = "=" * 78
     THIN  = "-" * 78
@@ -505,6 +524,30 @@ def run_pipeline() -> None:
         print(f"    [OK] MoE 推論完成\n")
 
 
+    # ── 準備 Execution Config & 券商持倉 (供 Optimizer 使用) ──
+    exec_params = exec_config.get("execution", {})
+    dry_run_mode = args.dry_run or exec_params.get("dry_run", False)
+
+    if dry_run_mode:
+        broker = ShadowBroker()
+    else:
+        try:
+            broker = FutuBroker(
+                host=exec_params.get("broker_host", "127.0.0.1"), 
+                port=exec_params.get("broker_port", 11111)
+            )
+        except ConnectionError as e:
+            logger.critical("🚨 無法連線至券商 API: %s", e)
+            print("🚨 無法連線至券商 API，將強制退回 Dry-run 模式")
+            broker = ShadowBroker()
+            dry_run_mode = True
+
+    current_weights = {}
+    account = broker.get_account()
+    if account.equity > 0:
+        for pos in broker.get_positions():
+            current_weights[pos.symbol] = pos.market_value / account.equity
+
     # ─────────────────────────────────────────────────────────────
     # STEP 5c: 投組優化器 (Risk Parity / Constrained MVO)
     # ─────────────────────────────────────────────────────────────
@@ -540,6 +583,8 @@ def run_pipeline() -> None:
         moe_weights=norm_weights,
         expert_utilisation=expert_util,
         cov_matrix=cov_matrix,
+        current_weights=current_weights,
+        exec_config=exec_config,
     )
     opt_mode = "RiskParity" if float(np.std(expert_util)) > 0.30 else "MVO"
     print(f"    優化模式     : {opt_mode}")
@@ -669,6 +714,28 @@ def run_pipeline() -> None:
           f"({decision.risk_tier.name})")
     print(f"  優化模式                : {opt_mode}")
     print(f"  情緒調整                : {sentiment_adjustment:.4f}")
+
+
+    # ─────────────────────────────────────────────────────────────
+    # STEP 10: Trade Execution (動態路由)
+    # ─────────────────────────────────────────────────────────────
+    print(f"{ARROW} STEP 10/10 : 券商執行路由 (Broker Execution)")
+    if dry_run_mode:
+        print("    模式         : 🟢 [DRY-RUN] 演習模式啟動：掛載 ShadowBroker (模擬滑價與虛擬成交)")
+    else:
+        print("    模式         : 🔴 [LIVE TRADE] 實盤模式啟動：已連線 FutuOpenD")
+
+    target_weights_dict = {asset: float(w) for asset, w in zip(assets_sorted, final_weights)}
+    
+    intents = broker.reconcile(target_weights=target_weights_dict)
+    
+    if not intents:
+        print("    ✅ 投資組合已是最佳狀態，無須調倉。")
+    else:
+        results = broker.execute(intents)
+        print("    📊 執行結果統整:")
+        for r in results:
+            print(f"      [{r.status}] {r.side} {r.symbol} x{r.qty} (Price: {r.filled_price:.2f}, ID: {r.order_id})")
 
     # ─────────────────────────────────────────────────────────────
     # PIPELINE COMPLETE
