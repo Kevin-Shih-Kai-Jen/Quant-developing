@@ -130,14 +130,17 @@ class AlphaSignalGenerator:
         if include_ai_analysis or include_supply_chain:
             try:
                 from .ticker_resolver import TickerResolver
+                from .data_client_factory import DataClientFactory
                 market_config = TickerResolver.get_market_config(ticker)
                 filing_type = market_config.filing_types.get("annual", "10-K")
-                filing_texts = self._scanner._client.get_filing_text(
+                client = DataClientFactory.get_client(ticker)
+                
+                filing_texts = client.get_filing_text(
                     ticker, filing_type=filing_type, sections=["mda", "risk"]
                 )
                 # 外國公司沒有 10-K，嘗試 20-F
                 if not any(filing_texts.values()) and filing_type == "10-K":
-                    filing_texts = self._scanner._client.get_filing_text(
+                    filing_texts = client.get_filing_text(
                         ticker, filing_type="20-F", sections=["mda", "risk"]
                     )
             except Exception as e:

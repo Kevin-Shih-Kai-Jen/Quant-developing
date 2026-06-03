@@ -348,20 +348,20 @@ class OODAnomalyDetector:
         """
         with self._lock:
             self._check_fitted()
-            assert self._if_model is not None
-            assert self._ae_model is not None
+            if self._if_model is None: raise RuntimeError("IsolationForest not fitted.")
+            if self._ae_model is None: raise RuntimeError("Autoencoder not fitted.")
             if features.ndim == 1:
                 features = features.reshape(1, -1)
 
             # Scale
             X_scaled = self._scaler.transform(features)   # [B, F]
-            assert self._train_min is not None and self._train_max is not None
+            if self._train_min is None or self._train_max is None: raise RuntimeError("Scaler not fitted.")
             X_01 = (X_scaled - self._train_min) / (self._train_max - self._train_min + 1e-8)
             # Do not clip — allow extreme OOD values to produce higher reconstruction error
 
             # Isolation Forest score
             raw_if    = self._if_model.decision_function(X_scaled)   # [B]
-            assert self._if_score_max is not None and self._if_score_min is not None
+            if self._if_score_max is None or self._if_score_min is None: raise RuntimeError("IF scores not fitted.")
             if_range  = self._if_score_max - self._if_score_min + 1e-8
             if_score_01 = float(
                 np.clip(

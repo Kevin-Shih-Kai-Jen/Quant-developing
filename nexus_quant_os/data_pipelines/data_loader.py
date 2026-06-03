@@ -311,6 +311,7 @@ def load_macro_data(
             macro_daily["cpi_yoy"] = 3.0
             macro_daily["unemployment_rate"] = 4.0
             macro_daily["industrial_production"] = 100.0
+            macro_daily["yield_curve_slope"] = 0.5
             macro_daily["fed_funds_rate"] = 5.0
             macro_daily["credit_spread"] = 2.0
             macro_daily["yield_curve_slope"] = -0.5

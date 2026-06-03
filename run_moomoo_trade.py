@@ -87,7 +87,7 @@ from nexus_quant_os.risk_firewall.firewall_core import (
     FirewallConfig,
     IntelligentRiskFirewall,
 )
-from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+from nexus_quant_os.portfolio.cvxpy_optimizer import PortfolioOptimizer, OptimizerConfig
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
 from nexus_quant_os.execution.futu_broker import FutuBroker
 
@@ -242,7 +242,13 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     with torch.no_grad():
         routing_result: RoutingOutput = router(X_tensor)
 
-    raw_weights = routing_result.combined_output[-1].cpu().numpy()
+    raw_weights = routing_result.combined_output[-1]
+    
+    # ── P0-7: 防護 NaN/Inf 權重汙染 ──
+    if np.any(np.isnan(raw_weights)) or np.any(np.isinf(raw_weights)):
+        print("    🚨 CRITICAL: MoE Router returned NaN/Inf! Forcing equal-weight fallback.")
+        raw_weights = np.ones(len(raw_weights)) / len(raw_weights)
+.cpu().numpy()
     print(f"    Assets: {list(assets_sorted)}")
     print(f"    Raw weights: {np.round(raw_weights, 4)}\n")
 
@@ -262,28 +268,22 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
     # ── STEP 7: Portfolio Optimization ────────────────────────────
     print("  ▸ STEP 7: Portfolio optimization...")
 
-    # Apply firewall scaling
-    scaled_weights = raw_weights * decision.scale_factor
-    # Long-only 模式：裁剪負權重（模擬模式下不允許做空）
-    neg_count = (scaled_weights < 0).sum()
-    if neg_count > 0:
-        logger.warning("裁剪 %d 個負權重 (long-only 模式)", neg_count)
-    scaled_weights = np.maximum(scaled_weights, 0)
-    weight_sum = scaled_weights.sum()
-    if weight_sum > 1e-8:
-        norm_weights = scaled_weights / weight_sum
+    # 1. Base weights from MoE (normalized)
+    base_weights = np.maximum(raw_weights, 0)
+    b_sum = base_weights.sum()
+    if b_sum > 1e-8:
+        base_weights /= b_sum
     else:
-        norm_weights = np.zeros_like(scaled_weights)
+        base_weights = np.ones_like(raw_weights) / len(raw_weights)
 
-    # Try CVXPY optimization
+    # 2. Try CVXPY optimization (on 100% deployed assumption)
     try:
-        # Build recent return matrix for optimizer
         returns_frames = []
         for asset in assets_sorted:
             asset_df = aligned_df[aligned_df["asset_id"] == asset].copy()
             asset_df = asset_df.sort_values("timestamp")
             asset_returns = asset_df["close"].pct_change().dropna().values
-            returns_frames.append(asset_returns[-252:])  # Last year
+            returns_frames.append(asset_returns[-252:])
 
         min_len = min(len(r) for r in returns_frames)
         return_matrix = np.column_stack([r[-min_len:] for r in returns_frames])
@@ -294,30 +294,31 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
         )
         cov_matrix = np.cov(return_matrix, rowvar=False)
         optimized_weights = optimizer.optimize(
-            moe_weights=norm_weights,
+            moe_weights=base_weights,
             expert_utilisation=np.zeros(1),
             cov_matrix=cov_matrix,
             returns_history=return_matrix,
         )
         opt_mode = "CVXPY-MVO"
     except Exception as exc:
-        logger.warning("Optimizer failed: %s — using normalized weights", exc)
-        optimized_weights = norm_weights
+        logger.warning("Optimizer failed: %s — using base weights", exc)
+        optimized_weights = base_weights
         opt_mode = "FALLBACK-NORMALIZED"
 
-    # Apply concentration cap
+    # 3. Apply concentration cap & Weight Smoothing
     MAX_WEIGHT = 0.15
     optimized_weights = np.minimum(optimized_weights, MAX_WEIGHT)
-    weight_sum = optimized_weights.sum()
-    if weight_sum > 1e-8:
-        optimized_weights = optimized_weights / weight_sum
+    if optimized_weights.sum() > 1e-8:
+        optimized_weights /= optimized_weights.sum()
 
-    # Weight smoothing
     weight_smoother = WeightSmoother(
         n_assets=len(assets_sorted),
         config=SmootherConfig(alpha=0.30, min_rebalance_threshold=0.04),
     )
-    final_weights = weight_smoother.smooth(optimized_weights)
+    smooth_weights = weight_smoother.smooth(optimized_weights)
+
+    # 4. FINAL STEP: Apply Firewall Scale & SQQQ Hedging
+    final_weights = smooth_weights * decision.scale_factor
 
     # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
     weight_check = check_weight_sanity(
@@ -345,6 +346,11 @@ def run_pipeline_and_get_weights() -> tuple[dict[str, float], dict, TradeReport]
         if fw > 0.01:
             target_weights[asset] = fw
         print(f"    {asset:<8} {rw:>+7.4f} {fw:>+7.4f}")
+
+    # ── 緊急避險：SQQQ 動態配置 ──
+    if decision.hmm_danger_prob > 0.78 and decision.scale_factor <= 0.5:
+        target_weights["SQQQ"] = 0.10
+        print("    🚨 EMERGENCY: Allocating 10% to SQQQ for crash protection!")
 
     total_exposure = sum(target_weights.values())
     cash_pct = max(0.0, 1.0 - total_exposure) * 100
@@ -415,6 +421,21 @@ def execute_on_moomoo(
         print(f"    Equity    : ${account.equity:,.2f}")
         print(f"    Cash      : ${account.cash:,.2f}")
         print(f"    Positions : {len(positions)}\n")
+
+        # ── HODL Exemption (NVDA, AVGO) ───────────────────────────────
+        exempt_assets = ["NVDA", "AVGO"]
+        for p in positions:
+            if p.symbol in exempt_assets:
+                current_weight = p.market_value / account.equity if account.equity > 0 else 0.0
+                model_target = target_weights.get(p.symbol, 0.0)
+                # Ensure we never sell these exempted assets below their current weight
+                if model_target < current_weight:
+                    target_weights[p.symbol] = current_weight
+                    print(f"    🛡️ HODL Exemption: {p.symbol} target forced to {current_weight:.1%} (Model wanted {model_target:.1%})")
+
+        # Re-calculate total exposure after HODL overrides
+        total_exposure = sum(target_weights.values())
+        metadata["cash_pct"] = max(0.0, 1.0 - total_exposure) * 100
 
         # ── Target allocation ─────────────────────────────────────────
         print("  ▸ Target Allocation:")
@@ -532,15 +553,11 @@ if __name__ == "__main__":
     try:
         target_weights, metadata, report = run_pipeline_and_get_weights()
 
+        # If target_weights is empty, it means the firewall ordered 100% cash.
+        # We MUST proceed to execute_on_moomoo to actually sell existing positions!
         if not target_weights:
-            print("\n  ⚠️ No target weights — exiting")
-            report.error = "No target weights produced"
-            notifier.send_alert(
-                title="Pipeline Warning",
-                message="Pipeline produced no target weights.",
-                severity="warning",
-            )
-            sys.exit(1)
+            print("\n  ⚠️ Target weights empty (100% Cash mode triggered)")
+
 
         report = execute_on_moomoo(target_weights, metadata, report)
 
@@ -553,6 +570,9 @@ if __name__ == "__main__":
         report.error = str(exc)
         report.traceback_str = traceback.format_exc()
         logger.error("Pipeline failed: %s", exc, exc_info=True)
+        try:
         notifier.send_error(report)
+    except Exception as e:
+        logger.error(f"Failed to send Discord alert: {e}")
         print(f"\n  ❌ FAILED — {exc}")
         sys.exit(1)

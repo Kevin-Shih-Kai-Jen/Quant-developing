@@ -189,6 +189,7 @@ class RegimeAllocator:
         regime_confidence: float,
         hmm_bear_prob: float = 0.0,
         hmm_danger_prob: float = 0.0,
+        days_in_shock: int = 0,
         asset_order: list[str] | None = None,
     ) -> np.ndarray:
         """將 MoE 預測權重與政體先驗混合。
@@ -205,6 +206,8 @@ class RegimeAllocator:
             HMM 判定熊市的後驗機率。
         hmm_danger_prob : float
             HMM 判定極端危險的後驗機率。
+        days_in_shock : int
+            連續處於危機狀態的天數。
         asset_order : list[str] | None
             moe_weights 的資產順序。若與 self.assets 不同，
             會自動重排 moe_weights 以匹配 self.assets。

@@ -442,15 +442,21 @@ async def run_pipeline():
                 ),
             )
             
-        vol_idx = spy_feature_names.index("realised_vol")
-        latest_vol = spy_feature_matrix[-1, vol_idx]
-        vix_proxy = float(latest_vol * np.sqrt(252) * 100)
-        
-        if len(spy_feature_matrix) >= 5:
-            vol_5ma = spy_feature_matrix[-5:, vol_idx].mean()
-            vix_5ma = float(vol_5ma * np.sqrt(252) * 100)
+        # [FUSE 1] NaN Poisoning 防禦: 確保特徵矩陣與價格資料健全
+        if len(spy_feature_matrix) == 0 or np.any(np.isnan(spy_feature_matrix[-1])):
+            logger.error("Critical: spy_feature_matrix contains NaN or is empty. Defaulting vix_proxy to high danger (40.0).")
+            vix_proxy = 40.0
+            vix_5ma = 40.0
         else:
-            vix_5ma = vix_proxy
+            vol_idx = spy_feature_names.index("realised_vol")
+            latest_vol = spy_feature_matrix[-1, vol_idx]
+            vix_proxy = float(latest_vol * np.sqrt(252) * 100)
+            
+            if len(spy_feature_matrix) >= 5:
+                vol_5ma = spy_feature_matrix[-5:, vol_idx].mean()
+                vix_5ma = float(vol_5ma * np.sqrt(252) * 100)
+            else:
+                vix_5ma = vix_proxy
         
         smoothed_weights = _smoother.smooth(
             regime_blended,
@@ -459,13 +465,61 @@ async def run_pipeline():
             vix_5ma=vix_5ma,
         )
         
-        # --- v2.0 Phase 2.5: Apply Firewall Scaling LAST! ---
-        # If firewall dictates 0.0 scale, we execute 0.0. The smoother retains the 'ideal' 1.0 portfolio internally.
-        final_weights = smoothed_weights * firewall_result.scale_factor
+        # --- v2.0 Phase 2.5: Apply Firewall Scaling & Phase 3 Defenses ---
+        scale_factor = firewall_result.scale_factor
+        
+        # 1. Price Action Validation (Technical check for re-entry)
+        # Check if SPY is above its 5-day EMA
+        spy_close = sp500_df["close"].values
+        if len(spy_close) >= 5:
+            ema_5 = pd.Series(spy_close).ewm(span=5, adjust=False).mean().iloc[-1]
+            if spy_close[-1] < ema_5 and firewall_result.days_safe > 0:
+                logger.warning("SPY below 5 EMA. Price action invalidates HMM safety. Locking scale_factor to 0.0.")
+                scale_factor = 0.0
+
+        final_weights = smoothed_weights * scale_factor
+
+        # 2. Dynamic Flight-to-Quality (TLT/GLD mapping)
+        if firewall_result.days_in_shock >= 3:
+            cash_freed = 1.0 - scale_factor
+            if cash_freed > 0:
+                logger.warning("Dynamic Flight-to-Quality: Allocating 50%% of freed cash to TLT/GLD.")
+                deployable = cash_freed * 0.50
+                for safe_asset in ["TLT", "GLD"]:
+                    if safe_asset in assets_list:
+                        idx = assets_list.index(safe_asset)
+                        final_weights[idx] += deployable / 2.0
+                        
+        # 3. Index-Level Hedging (SQQQ during shock)
+        if firewall_result.hmm_danger_prob > 0.78 and scale_factor <= 0.5:
+            # Check if we can allocate to SQQQ
+            hedge_asset = "SQQQ"
+            if hedge_asset not in assets_list:
+                assets_list.append(hedge_asset)
+                # [FUSE 2] Array Sync 防禦: 必須同步擴充所有對應長度的矩陣
+                final_weights = np.append(final_weights, 0.0)
+                norm_weights = np.append(norm_weights, 0.0)
+                regime_blended = np.append(regime_blended, 0.0)
+                
+            idx = assets_list.index(hedge_asset)
+            logger.warning("Index-Level Hedging: Allocating 10%% to %s.", hedge_asset)
+            final_weights[idx] += 0.10
+
+        # [FUSE 3] NaN 清洗與總槓桿上限檢查 (防止瘋狂下單)
+        final_weights = np.nan_to_num(final_weights, nan=0.0, posinf=0.0, neginf=0.0)
+        total_weight = np.sum(final_weights)
+        if total_weight > 1.0:
+            logger.warning("Total weight %.2f exceeds 1.0! Normalizing to 1.0 to prevent margin explosion.", total_weight)
+            final_weights = final_weights / total_weight
+
+        # Prevent any negative weights for single stocks (Long-Only rule)
+        for i, asset in enumerate(assets_list):
+            if asset not in ["SQQQ", "SH"] and final_weights[i] < 0:
+                final_weights[i] = 0.0
 
         # ── HEALTH GATE 2: Weight Sanity (Layer 2) ───────────────────
         weight_check = check_weight_sanity(
-            final_weights, asset_names=list(assets), max_single_weight=0.40,
+            final_weights, asset_names=list(assets_list), max_single_weight=0.50, # Increased for TLT/GLD flight
         )
         if weight_check.severity == Severity.CRITICAL:
             logger.error("Weight sanity CRITICAL: %s", weight_check.message)
@@ -473,15 +527,19 @@ async def run_pipeline():
 
         # Formatting Output
         allocations = []
-        for i, asset in enumerate(assets):
-            rw = float(norm_weights[i])
+        for i, asset in enumerate(assets_list):
+            rw = float(norm_weights[i]) if i < len(norm_weights) else 0.0
             sw = float(final_weights[i])
             action = "BUY" if sw > 0.05 else ("SELL" if sw < -0.05 else "HOLD")
+            
+            # 確保 regime_blended 有被正確擴充
+            rw_val = float(regime_blended[i]) if i < len(regime_blended) else 0.0
+            
             allocations.append({
                 "asset": asset,
                 "raw_weight": rw,
                 "scale": firewall_result.scale_factor,
-                "regime_weight": float(regime_blended[i]),
+                "regime_weight": rw_val,
                 "safe_weight": sw,
                 "action": action
             })

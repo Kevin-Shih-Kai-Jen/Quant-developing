@@ -84,7 +84,11 @@ class FinancialScanner:
 
     def scan_single(self, ticker: str) -> Optional[ScanResult]:
         """掃描單一公司。"""
-        history = self._client.get_financials_history(ticker, n_quarters=5)
+        # 動態取得適合該 ticker 的 client
+        from .data_client_factory import DataClientFactory
+        client = DataClientFactory.get_client(ticker)
+        
+        history = client.get_financials_history(ticker, n_quarters=5)
         if not history:
             return None
 
@@ -183,7 +187,10 @@ class FinancialScanner:
 
         # ── Epic 1: Q4 隱含季盈餘推估 ──
         from .implied_earnings import ImpliedEarningsEstimator
-        if config.market_id == "TW" and getattr(self._client, "get_monthly_revenue", None):
+        from .data_client_factory import DataClientFactory
+        client = DataClientFactory.get_client(stmt.ticker)
+        
+        if config.market_id == "TW" and getattr(client, "get_monthly_revenue", None):
             current_month = datetime.now(timezone.utc).month
             # 在 1~3 月期間，若最新財報為 Q3，則推估 Q4
             if current_month in (1, 2, 3) and stmt.fiscal_quarter == 3:

@@ -169,9 +169,8 @@ If no relationships found, output: []
             except requests.RequestException as e:
                 is_rate_limit = isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code == 429
                 if is_rate_limit:
-                    retry_after = int(e.response.headers.get("Retry-After", 5 * (attempt + 1)))
-                    wait_time = min(retry_after, 30)
-                    logger.warning("Gemini 429 rate limited (attempt %d), waiting %ds", attempt+1, wait_time)
+                    logger.warning("Gemini 429 rate limited, returning None immediately to trigger Ollama fallback.")
+                    return None
                 else:
                     wait_time = 2 ** attempt
                     logger.warning("Gemini API request failed (attempt %d): %s", attempt+1, e)

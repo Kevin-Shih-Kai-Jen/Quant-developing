@@ -101,7 +101,7 @@ from nexus_quant_os.risk_firewall.firewall_core import (
 )
 
 # [DAG Layer 4] 投組優化 + 權重管理層
-from nexus_quant_os.portfolio.optimizer import PortfolioOptimizer, OptimizerConfig
+from nexus_quant_os.portfolio.cvxpy_optimizer import PortfolioOptimizer, OptimizerConfig
 from nexus_quant_os.portfolio.weight_smoother import WeightSmoother, SmootherConfig
 from nexus_quant_os.portfolio.regime_allocator import RegimeAllocator, RegimeAllocatorConfig
 from nexus_quant_os.llm.sentiment_aggregator import SentimentAggregator
@@ -120,6 +120,11 @@ DATA_START = "2020-01-02"
 DATA_END   = None    # None = 今天
 
 # FRED API Key (從環境變數讀取，保護私鑰不進版本控制)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 
 # 特徵工程窗口

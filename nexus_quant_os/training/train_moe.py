@@ -91,12 +91,12 @@ DATA_START      = "2020-01-01"
 
 FEATURE_COLS = [
     "daily_return", "realised_vol", "high_low_spread", "volume_zscore",
-    "cpi_yoy", "unemployment_rate", "pmi_manufacturing", "credit_spread",
+    "cpi_yoy", "unemployment_rate", "industrial_production", "credit_spread",
     "yield_curve_slope",
 ]
 
 MACRO_COLS = [
-    "cpi_yoy", "unemployment_rate", "pmi_manufacturing",
+    "cpi_yoy", "unemployment_rate", "industrial_production",
     "credit_spread", "yield_curve_slope",
 ]
 TECH_COLS  = ["daily_return", "realised_vol", "high_low_spread", "volume_zscore"]

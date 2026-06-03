@@ -159,8 +159,8 @@ Output ONLY valid JSON. No markdown, no explanation.
                 try:
                     resp = self._session.post(url, json=payload, timeout=self._timeout)
                     if resp.status_code == 429:
-                        time.sleep(5)
-                        continue
+                        logger.warning("Gemini 429 Rate Limit in AIAnalyst. Returning None immediately for fallback.")
+                        return None
                     resp.raise_for_status()
                     data = resp.json()
                     text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -180,6 +180,37 @@ Output ONLY valid JSON. No markdown, no explanation.
                     time.sleep(2 ** attempt)
 
         return result_json
+
+    def _call_ollama(self, prompt: str) -> Optional[Dict[str, Any]]:
+        from ._constants import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT
+        url = f"{OLLAMA_BASE_URL}/api/generate"
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 2048,
+            }
+        }
+        try:
+            resp = requests.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
+            resp.raise_for_status()
+            text = resp.json()["response"]
+            import re as _re
+            md_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
+            if md_match:
+                text = md_match.group(1).strip()
+            else:
+                brace_start = text.find('{')
+                brace_end = text.rfind('}')
+                if brace_start != -1 and brace_end > brace_start:
+                    text = text[brace_start:brace_end + 1]
+            return json.loads(text)
+        except Exception as e:
+            logger.warning("Ollama call failed: %s", e)
+            return None
 
     def analyze(
         self,
@@ -244,6 +275,12 @@ Output ONLY valid JSON. No markdown, no explanation.
                 res = future.result()
                 if res:
                     results.append(res)
+
+        if not results:
+            logger.warning("Gemini ensemble failed (possibly rate limited), falling back to single Ollama call.")
+            fallback_res = self._call_ollama(prompt)
+            if fallback_res:
+                results.append(fallback_res)
 
         if not results:
             return default_analysis

@@ -7,7 +7,7 @@ data_pipelines/feature_engineer.py — 統一特徵工程模組
 
 特徵清單 (9 個)：
     技術面 (4)：daily_return, realised_vol, high_low_spread, volume_zscore
-    總經面 (5)：cpi_yoy, unemployment_rate, pmi_manufacturing,
+    總經面 (5)：cpi_yoy, unemployment_rate, industrial_production,
                credit_spread, yield_curve_slope
 
 Author : Nexus Quant OS — Data Engineering Division
@@ -28,12 +28,12 @@ VOL_LOOKBACK = 20
 # 統一特徵欄位定義（與 train_moe.py 一致）
 FEATURE_COLS = [
     "daily_return", "realised_vol", "high_low_spread", "volume_zscore",
-    "cpi_yoy", "unemployment_rate", "pmi_manufacturing",
+    "cpi_yoy", "unemployment_rate", "industrial_production",
     "credit_spread", "yield_curve_slope",
 ]
 
 MACRO_COLS = [
-    "cpi_yoy", "unemployment_rate", "pmi_manufacturing",
+    "cpi_yoy", "unemployment_rate", "industrial_production",
     "credit_spread", "yield_curve_slope",
 ]
 
@@ -59,7 +59,7 @@ def add_technical_features(aligned_df: pd.DataFrame) -> pd.DataFrame:
     vol_std = df.groupby("asset_id")["volume"].transform(
         lambda x: x.rolling(VOL_LOOKBACK, min_periods=5).std()
     )
-    df["volume_zscore"] = (df["volume"] - vol_mean) / (vol_std + 1e-8)
+    df["volume_zscore"] = ((df["volume"] - vol_mean) / (vol_std + 1e-8)).clip(-10, 10)
 
     # ── 低頻總經特徵（已由 Aligner 嚴格對齊） ────────────────────
     for col in MACRO_COLS:
