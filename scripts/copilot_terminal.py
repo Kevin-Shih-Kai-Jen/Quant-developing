@@ -1,3 +1,4 @@
+import sys
 import re
 import json
 import yaml
@@ -5,7 +6,7 @@ import asyncio
 import subprocess
 import os
 
-class DeepSeekMockClient:
+class DeepSeekClient:
     """Mock LLM Client for demonstration purposes"""
     def ask(self, user_prompt: str) -> str:
         if "博通" in user_prompt or "AVGO" in user_prompt:
@@ -15,7 +16,7 @@ class DeepSeekMockClient:
 {
     "tool": "update_universe_and_rules",
     "add_blacklist": ["AVGO"],
-    "custom_python_code": "def user_dynamic_filter(df):\n    if 'volatility' in df.columns:\n        return df['volatility'] < 0.05\n    return True"
+    "custom_python_code": "def user_dynamic_filter(df):\\n    if 'volatility' in df.columns:\\n        return df['volatility'] < 0.05\\n    return True"
 }
 ```
 
@@ -29,7 +30,7 @@ class DeepSeekMockClient:
 class CopilotTerminal:
     def __init__(self):
         # Substitute with actual DeepSeekClient in production
-        self.llm = DeepSeekMockClient()
+        self.llm = DeepSeekClient()
         self.config_path = "execution_config.yaml"
 
     async def _run_dag_pipeline_async(self):
@@ -37,7 +38,7 @@ class CopilotTerminal:
         print("\n🚀 [系統後端] 正在啟動 DAG 管線 (main.py --dry-run)...")
         # 使用 subprocess 在背景跑，模擬真實系統架構
         process = await asyncio.create_subprocess_exec(
-            "python", "main.py", "--dry-run",
+            sys.executable, "main.py", "--dry-run",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env={**os.environ, "PYTHONPATH": "."}
         )
@@ -57,7 +58,7 @@ class CopilotTerminal:
         print(f"\n🤖 [AI 副駕]:\n{clean_text}\n")
 
         # 2. 攔截系統工具指令
-        tool_calls = re.findall(r'```json_tool_call\n(.*?)\n```', llm_response, re.DOTALL)
+        tool_calls = re.findall(r'```json_tool_call\s*(.*?)\s*```', llm_response, re.DOTALL)
         
         for call_str in tool_calls:
             try:

@@ -704,6 +704,98 @@
         .summary-badge.healthy { background: var(--green-dim); color: var(--green); }
         .summary-badge.unhealthy { background: var(--red-dim); color: var(--red); }
 
+        /* ===== Copilot Pipeline Overlay ===== */
+        .pipeline-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.75);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.3s ease both;
+        }
+        .pipeline-overlay.hidden { display: none; }
+        .pipeline-modal {
+            width: 90%;
+            max-width: 800px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+            overflow: hidden;
+        }
+        .pipeline-header {
+            padding: 20px 24px;
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--cyan);
+            border-bottom: 1px solid var(--border-card);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .pipeline-progress-bar {
+            height: 3px;
+            background: rgba(255,255,255,0.05);
+            position: relative;
+            overflow: hidden;
+        }
+        .pipeline-progress-bar .bar-fill {
+            position: absolute;
+            top: 0; left: -40%;
+            width: 40%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+            animation: shimmer 1.5s ease-in-out infinite;
+        }
+        @keyframes shimmer {
+            0% { left: -40%; }
+            100% { left: 100%; }
+        }
+        .pipeline-terminal {
+            height: 350px;
+            overflow-y: auto;
+            padding: 16px 20px;
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 0.75rem;
+            line-height: 1.6;
+            color: var(--green);
+            background: #0a0e14;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .pipeline-terminal .log-line {
+            opacity: 0.85;
+        }
+        .pipeline-terminal .log-line:last-child {
+            opacity: 1;
+            color: var(--cyan);
+        }
+        .copilot-status-msg {
+            padding: 10px 16px;
+            margin: 8px 0;
+            background: var(--cyan-dim);
+            border-left: 3px solid var(--cyan);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            font-size: 0.85rem;
+            color: var(--cyan);
+        }
+        .copilot-ws-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: var(--radius-pill);
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        .copilot-ws-badge.connected { background: var(--green-dim); color: var(--green); }
+        .copilot-ws-badge.disconnected { background: var(--red-dim); color: var(--red); }
+
         .spinner {
             display: inline-block;
             width: 18px;
@@ -1344,6 +1436,15 @@
                     </div>
                     <button class="icon-btn send-btn" onclick="sendMessage()" id="sendBtn" title="傳送">➤</button>
                 </div>
+
+                <!-- Copilot Pipeline Overlay -->
+                <div id="pipeline-overlay" class="pipeline-overlay hidden">
+                    <div class="pipeline-modal">
+                        <div class="pipeline-header">🔄 模型重新訓練與回測中...</div>
+                        <div class="pipeline-progress-bar"><div class="bar-fill"></div></div>
+                        <pre id="pipeline-logs" class="pipeline-terminal"></pre>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -1854,6 +1955,100 @@
         if (el) el.remove();
     }
 
+    // ===== Copilot WebSocket =====
+    let copilotWs = null;
+    let copilotConnected = false;
+    const MAX_LOG_LINES = 1000;
+
+    function initCopilotWs() {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        copilotWs = new WebSocket(`${protocol}//${location.host}/api/copilot/ws`);
+
+        copilotWs.onopen = () => {
+            copilotConnected = true;
+            logger.info('Copilot WebSocket connected');
+        };
+
+        copilotWs.onclose = () => {
+            copilotConnected = false;
+            logger.info('Copilot WebSocket disconnected, reconnecting in 3s...');
+            setTimeout(initCopilotWs, 3000);
+        };
+
+        copilotWs.onerror = (e) => {
+            logger.error('Copilot WebSocket error');
+        };
+
+        copilotWs.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                handleCopilotMessage(msg);
+            } catch (e) {
+                console.error('WS parse error:', e);
+            }
+        };
+    }
+
+    function handleCopilotMessage(msg) {
+        switch (msg.type) {
+            case 'message':
+                removeTypingIndicator();
+                appendMessage('ai', msg.data);
+                chatHistory.push({ role: 'ai', content: msg.data });
+                break;
+
+            case 'status':
+                removeTypingIndicator();
+                appendMessage('ai', `<div class="copilot-status-msg">${msg.data}</div>`);
+                break;
+
+            case 'pipeline_start':
+                removeTypingIndicator();
+                document.getElementById('chatInput').disabled = true;
+                document.getElementById('sendBtn').disabled = true;
+                document.getElementById('pipeline-logs').innerHTML = '';
+                document.getElementById('pipeline-overlay').classList.remove('hidden');
+                break;
+
+            case 'pipeline_log':
+                appendPipelineLog(msg.data);
+                break;
+
+            case 'pipeline_review':
+                appendMessage('ai', msg.data);
+                chatHistory.push({ role: 'ai', content: msg.data });
+                break;
+
+            case 'pipeline_done':
+                document.getElementById('pipeline-overlay').classList.add('hidden');
+                document.getElementById('chatInput').disabled = false;
+                document.getElementById('sendBtn').disabled = false;
+                appendMessage('ai', '✅ 管線執行完畢，UI 已解鎖。');
+                document.getElementById('chatInput').focus();
+                break;
+
+            case 'error':
+                removeTypingIndicator();
+                appendMessage('ai', `⚠️ ${msg.data}`);
+                break;
+        }
+    }
+
+    function appendPipelineLog(line) {
+        const logsEl = document.getElementById('pipeline-logs');
+        const lineEl = document.createElement('div');
+        lineEl.className = 'log-line';
+        lineEl.textContent = line;
+        logsEl.appendChild(lineEl);
+
+        // 升級四：DOM 上限 1000 行，防止 OOM
+        while (logsEl.childElementCount > MAX_LOG_LINES) {
+            logsEl.removeChild(logsEl.firstChild);
+        }
+        // 自動滾動到底部
+        logsEl.scrollTop = logsEl.scrollHeight;
+    }
+
     async function sendMessage() {
         const input = document.getElementById('chatInput');
         const text = input.value.trim();
@@ -1868,25 +2063,29 @@
 
         appendMessage('user', text);
         chatHistory.push({ role: 'user', content: text });
-
         showTypingIndicator();
 
-        try {
-            const resp = await fetch('/api/advisor/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text })
-            });
-            removeTypingIndicator();
-
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-            const reply = data.response || data.message || '（無回應）';
-            appendMessage('ai', reply);
-            chatHistory.push({ role: 'ai', content: reply });
-        } catch (err) {
-            removeTypingIndicator();
-            appendMessage('ai', '⚠️ 無法取得回應，請稍後再試。\n\n錯誤：' + err.message);
+        // 優先使用 Copilot WebSocket
+        if (copilotWs && copilotConnected) {
+            copilotWs.send(JSON.stringify({ message: text }));
+        } else {
+            // Fallback: 原始 HTTP API
+            try {
+                const resp = await fetch('/api/advisor/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                removeTypingIndicator();
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const reply = data.response || data.message || '（無回應）';
+                appendMessage('ai', reply);
+                chatHistory.push({ role: 'ai', content: reply });
+            } catch (err) {
+                removeTypingIndicator();
+                appendMessage('ai', '⚠️ 無法取得回應，請稍後再試。\n\n錯誤：' + err.message);
+            }
         }
     }
 
@@ -1944,6 +2143,12 @@
             sendMessage();
         }
     }
+
+    // Dummy logger for WS events
+    const logger = { info: console.log, error: console.error, warn: console.warn };
+
+    // Initialize WebSocket on page load
+    initCopilotWs();
 
     // ===== Monitor =====
     async function runHealthCheck() {

@@ -1,24 +1,10 @@
-# execution_config.yaml — 人類指令層 (Human Override Layer)
-# 此檔案的權限高於 AI 大腦，AI 的所有交易決策都必須通過此處的過濾
-
-# 🛡️ 信仰持倉：系統絕對不可以賣出這些股票 (HODL)
-hodl_symbols:
-  - NVDA
-  - AVGO
-
-# 📌 強制買入清單：無論 AI 怎麼判斷，每次 rebalance 時都保證這些股票至少持有 min_weight
-forced_positions:
-  # - symbol: TSMC
-  #   min_weight: 0.05   # 至少 5%
-
-# 🚫 黑名單：絕對禁止交易的標的 (例如道德投資排除菸草、軍火)
 blacklist:
-  # - MO    # Altria (菸草)
-  # - LMT   # Lockheed Martin (軍火)
-
-# ⚙️ 執行參數
+- AVGO
 execution:
-  dry_run: false              # true = 演習模式，不送單
-  max_notional_usd: 100000    # 胖手指上限 (美金)
-  broker_host: "127.0.0.1"
+  broker_host: 127.0.0.1
   broker_port: 11111
+  dry_run: false
+  max_notional_usd: 100000
+forced_positions: null
+hodl_symbols:
+- NVDA

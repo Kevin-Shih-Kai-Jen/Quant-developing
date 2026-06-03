@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -110,6 +111,7 @@ class OrderIntent:
     side: Literal["BUY", "SELL"]
     qty: float
     reason: str
+    idem_key: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True)

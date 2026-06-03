@@ -1220,3 +1220,200 @@ async def stream_alpha_signals():
             raise
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ═════════════════════════════════════════════════════════════════════
+# v2.2: AI Copilot WebSocket Endpoint (7 Upgrades Integrated)
+# ═════════════════════════════════════════════════════════════════════
+
+import yaml as _yaml
+from collections import deque
+from fastapi import WebSocket, WebSocketDisconnect
+
+_copilot_lock = asyncio.Lock()
+_copilot_pipeline_process: asyncio.subprocess.Process | None = None
+_EXEC_CONFIG_PATH = _ROOT / "execution_config.yaml"
+
+# 載入 Copilot System Prompt
+_COPILOT_SYSTEM_PROMPT = ""
+_copilot_prompt_path = _ROOT / "scripts" / "copilot_prompt.md"
+if _copilot_prompt_path.exists():
+    _COPILOT_SYSTEM_PROMPT = _copilot_prompt_path.read_text(encoding="utf-8")
+    logger.info("Copilot System Prompt 已載入 (%d chars)", len(_COPILOT_SYSTEM_PROMPT))
+
+
+@app.websocket("/api/copilot/ws")
+async def copilot_websocket(ws: WebSocket):
+    """AI 副駕 WebSocket 端點 — 對話 + JSON 攔截 + 管線串流 + AI 覆盤。"""
+    await ws.accept()
+    logger.info("✅ Copilot WebSocket 已連線")
+
+    advisor = await _get_advisor()
+
+    global _copilot_pipeline_process
+
+    try:
+        while True:
+            data = await ws.receive_json()
+            user_msg = data.get("message", "").strip()
+            if not user_msg:
+                continue
+
+            # ── Phase 1: 呼叫 Gemini LLM ──────────────────────────────
+            # 升級五：asyncio.to_thread 防止同步呼叫卡死 Event Loop
+            copilot_prompt = (
+                f"{_COPILOT_SYSTEM_PROMPT}\n\n"
+                f"用戶指令：{user_msg}\n\n"
+                "請根據你的角色回應。如果用戶要求修改系統配置或啟動管線，"
+                "請在回覆中使用 ```json_tool_call``` 標籤輸出對應的工具指令。"
+            )
+            try:
+                llm_response = await asyncio.to_thread(advisor.chat, copilot_prompt)
+            except Exception as e:
+                logger.error("Copilot LLM 呼叫失敗: %s", e)
+                await ws.send_json({"type": "error", "data": f"⚠️ AI 服務暫時不可用：{e}"})
+                continue
+
+            # 顯示乾淨的文字（移除工具標籤）
+            clean_text = re.sub(
+                r'```json_tool_call.*?```', '', llm_response, flags=re.DOTALL
+            ).strip()
+            if clean_text:
+                await ws.send_json({"type": "message", "data": clean_text})
+
+            # ── Phase 2: 攔截 json_tool_call ──────────────────────────
+            tool_calls = re.findall(
+                r'```json_tool_call\s*(.*?)\s*```', llm_response, flags=re.DOTALL
+            )
+
+            for call_str in tool_calls:
+                try:
+                    cmd = json.loads(call_str)
+                except json.JSONDecodeError as e:
+                    await ws.send_json({"type": "error", "data": f"JSON 解析失敗：{e}"})
+                    continue
+
+                tool_name = cmd.get("tool", "")
+
+                # ── 工具 A：更新 YAML 配置 ────────────────────────
+                if tool_name == "update_universe_and_rules":
+                    # 升級二：全域併發鎖
+                    if _copilot_lock.locked():
+                        await ws.send_json({
+                            "type": "error",
+                            "data": "🚨 系統正在執行管線，無法同時修改配置。"
+                        })
+                        continue
+
+                    async with _copilot_lock:
+                        try:
+                            config = {}
+                            if _EXEC_CONFIG_PATH.exists():
+                                with open(_EXEC_CONFIG_PATH, "r", encoding="utf-8") as f:
+                                    config = _yaml.safe_load(f) or {}
+
+                            if "blacklist" not in config or not isinstance(config["blacklist"], list):
+                                config["blacklist"] = []
+
+                            new_items = cmd.get("add_blacklist", [])
+                            config["blacklist"].extend(new_items)
+                            config["blacklist"] = sorted(set(config["blacklist"]))
+
+                            with open(_EXEC_CONFIG_PATH, "w", encoding="utf-8") as f:
+                                _yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+
+                            await ws.send_json({
+                                "type": "status",
+                                "data": f"✅ 配置已更新 — 黑名單：{config['blacklist']}"
+                            })
+                            logger.info("Copilot 已更新 YAML: blacklist=%s", config["blacklist"])
+                        except Exception as e:
+                            await ws.send_json({"type": "error", "data": f"YAML 寫入失敗：{e}"})
+
+                # ── 工具 B：觸發 DAG 管線 ─────────────────────────
+                elif tool_name == "trigger_dag_pipeline":
+                    # 升級二：全域併發鎖
+                    if _copilot_lock.locked():
+                        await ws.send_json({
+                            "type": "error",
+                            "data": "🚨 系統正在執行管線，請稍候再試。"
+                        })
+                        continue
+
+                    async with _copilot_lock:
+                        await ws.send_json({"type": "pipeline_start"})
+
+                        # 升級六：環形緩衝區 — 永遠只保留最後 100 行，O(1) 記憶體
+                        log_buffer: deque[str] = deque(maxlen=100)
+
+                        try:
+                            # 升級七：sys.executable 錨定虛擬環境
+                            _copilot_pipeline_process = await asyncio.create_subprocess_exec(
+                                sys.executable, "main.py", "--dry-run",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.STDOUT,
+                                cwd=str(_ROOT),
+                                env={**os.environ, "PYTHONPATH": str(_ROOT)},
+                            )
+
+                            # 即時逐行串流日誌
+                            async for raw_line in _copilot_pipeline_process.stdout:
+                                line = raw_line.decode("utf-8", errors="replace").rstrip()
+                                log_buffer.append(line)
+                                try:
+                                    await ws.send_json({"type": "pipeline_log", "data": line})
+                                except Exception:
+                                    break  # WS 可能已斷線
+
+                            await _copilot_pipeline_process.wait()
+                            exit_code = _copilot_pipeline_process.returncode
+                            logger.info("管線子行程結束，exit_code=%s", exit_code)
+
+                            # ── 升級一：AI 覆盤反饋閉環 ───────────
+                            last_logs = "\n".join(log_buffer)
+                            review_prompt = (
+                                "[系統隱藏訊息] 回測/演習已完成。"
+                                f"這是最後一段日誌：\n{last_logs}\n\n"
+                                "請根據剛才用戶的設定，向用戶進行專業的成效覆盤分析。"
+                                "重點關注：權重分配是否合理、黑名單是否生效、"
+                                "風險防火牆狀態、以及整體策略建議。"
+                            )
+                            try:
+                                # 升級五：to_thread 防卡死
+                                review_text = await asyncio.to_thread(
+                                    advisor.chat, review_prompt
+                                )
+                                await ws.send_json({
+                                    "type": "pipeline_review", "data": review_text
+                                })
+                            except Exception as e:
+                                await ws.send_json({
+                                    "type": "pipeline_review",
+                                    "data": f"⚠️ AI 覆盤分析失敗：{e}"
+                                })
+
+                            await ws.send_json({"type": "pipeline_done"})
+
+                        except Exception as e:
+                            logger.exception("管線執行失敗")
+                            await ws.send_json({"type": "error", "data": f"管線執行失敗：{e}"})
+                            await ws.send_json({"type": "pipeline_done"})
+                        finally:
+                            _copilot_pipeline_process = None
+
+    # ── 升級三：殭屍行程防禦 ──────────────────────────────────────────
+    except WebSocketDisconnect:
+        logger.warning("⚠️ Copilot WebSocket 斷線")
+        if _copilot_pipeline_process and _copilot_pipeline_process.returncode is None:
+            logger.warning("🔪 正在終止殭屍子行程 (PID=%s)...", _copilot_pipeline_process.pid)
+            _copilot_pipeline_process.terminate()
+            try:
+                await asyncio.wait_for(_copilot_pipeline_process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                _copilot_pipeline_process.kill()
+            _copilot_pipeline_process = None
+            logger.info("✅ 殭屍子行程已成功終止。")
+    except Exception as e:
+        logger.error("Copilot WebSocket 異常終止: %s", e)
+        if _copilot_pipeline_process and _copilot_pipeline_process.returncode is None:
+            _copilot_pipeline_process.terminate()
+            _copilot_pipeline_process = None

@@ -554,7 +554,14 @@ class FutuBroker(BrokerBase):
         prices_dict = self._get_prices(all_symbols)
 
         for intent in intents:
+            if hasattr(intent, 'idem_key') and intent.idem_key in self._executed_intents:
+                logger.warning(f"🛑 [Idempotency] 委託 {intent.symbol} {intent.side} (UUID: {intent.idem_key}) 已執行過，跳過防重複下單。")
+                continue
+                
             try:
+                if hasattr(intent, 'idem_key'):
+                    self._executed_intents.add(intent.idem_key)
+
                 # Get current price for the limit order
                 price = prices_dict.get(intent.symbol)
                 if price is None or price <= 0:
