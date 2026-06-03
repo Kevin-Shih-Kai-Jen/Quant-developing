@@ -133,6 +133,14 @@ class PortfolioOptimizer:
         """
         cfg = self.config
 
+        # 🛡️ 裝甲：拒絕毒藥數據
+        if not np.isfinite(moe_weights).all() or not np.isfinite(cov_matrix).all():
+            logger.critical("🚨 [防爆] Optimizer 收到 NaN/Inf 毒數據！強制避險：100% 現金/等權重。")
+            w_fallback = np.zeros(self.n_assets)
+            if self.idx_shy != -1: w_fallback[self.idx_shy] = 1.0
+            else: w_fallback[:] = 1.0 / self.n_assets
+            return w_fallback
+
         # ── Layer 1：檢查 Expert 分歧度 → 決定是否回退 ────────────
         dispersion = float(np.std(expert_utilisation))
         use_risk_parity = dispersion > cfg.dispersion_threshold
@@ -175,8 +183,12 @@ class PortfolioOptimizer:
                 )
                 try:
                     weights = compute_risk_parity_weights(cov_matrix)
-                except Exception:
-                    weights = compute_inverse_volatility_weights(cov_matrix)
+                except Exception as e3:
+                    # 🛡️ 裝甲：終極 Plan D，保證系統存活
+                    logger.critical("🚨 所有優化器皆崩潰(%s)！啟動終極防禦：全現金/等權", e3)
+                    weights = np.zeros(self.n_assets)
+                    if self.idx_shy != -1: weights[self.idx_shy] = 1.0
+                    else: weights[:] = 1.0 / self.n_assets
 
         # ── 約束後處理 ────────────────────────────────────────────
         weights = self._apply_constraints(weights)
@@ -275,9 +287,11 @@ class PortfolioOptimizer:
                 
         prob = cp.Problem(objective, constraints)
         try:
-            prob.solve(solver=cp.OSQP, max_iter=4000)
+            # 🛡️ 裝甲：強制 5 秒內給出結果，不允許主程式被優化器卡死
+            prob.solve(solver=cp.OSQP, max_iter=4000, osqp_params={'time_limit': 5.0})
         except Exception as e:
-            logger.error("CVXPY solve error: %s", e)
+            logger.error("CVXPY 求解超時或崩潰: %s", e)
+            raise RuntimeError("CVXPY 求解失敗") from e # 拋給外層 Risk Parity 處理
             
         if prob.status in ["optimal", "optimal_inaccurate"] and w.value is not None:
             return np.array(w.value)

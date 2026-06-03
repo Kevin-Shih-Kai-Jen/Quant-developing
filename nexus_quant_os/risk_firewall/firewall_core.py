@@ -39,7 +39,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional
+from typing import Optional, Any
 
 import numpy as np
 
@@ -145,6 +145,8 @@ class FirewallDecision:
     hmm_regime_label: str
     ood_is_flagged: bool
     veto_reason: str
+    days_in_shock: int = 0
+    days_safe: int = 0
 
 
 # =====================================================================
@@ -192,6 +194,7 @@ class IntelligentRiskFirewall:
         self.hmm_detectors: dict[str, MarketRegimeDetector] = {"US": hmm_detector}
         self.ood_detectors: dict[str, OODAnomalyDetector] = {"US": ood_detector}
         self._is_fitted: dict[str, bool] = {"US": False}
+        self.shock_state: dict[str, dict[str, Any]] = {"US": {"days_in_shock": 0, "days_safe": 0, "last_scale_factor": 1.0}}
         
         self._lock = threading.Lock()
 
@@ -216,6 +219,11 @@ class IntelligentRiskFirewall:
             
         if hasattr(self, "ood_detector") and not hasattr(self, "ood_detectors"):
             self.ood_detectors = {"US": getattr(self, "ood_detector")}
+            
+        if not hasattr(self, "shock_state"):
+            self.shock_state = {}
+            for m in self._is_fitted:
+                self.shock_state[m] = {"days_in_shock": 0, "days_safe": 0, "last_scale_factor": 1.0}
 
     @classmethod
     def from_configs(
@@ -405,6 +413,24 @@ class IntelligentRiskFirewall:
     # 3d. Main evaluation
     # -----------------------------------------------------------------
 
+    def _create_emergency_decision(self, raw_weights: np.ndarray, reason: str) -> FirewallDecision:
+        """Helper to create an emergency zero-out decision for fatal errors."""
+        adjusted = np.zeros_like(raw_weights)
+        return FirewallDecision(
+            raw_weights=raw_weights.copy(),
+            adjusted_weights=adjusted,
+            scale_factor=0.0,
+            risk_tier=RiskTier.EMERGENCY,
+            hmm_danger_prob=1.0,
+            hmm_bear_prob=1.0,
+            ood_combined_score=1.0,
+            hmm_regime_label="FATAL_ERROR",
+            ood_is_flagged=True,
+            veto_reason=f"FATAL ERROR OVERRIDE: {reason}",
+            days_in_shock=999,
+            days_safe=0,
+        )
+
     def evaluate(
         self,
         market_features: np.ndarray,
@@ -412,58 +438,115 @@ class IntelligentRiskFirewall:
         market: str = "US",
         margin_ratio: Optional[float] = None,
     ) -> FirewallDecision:
-        """Apply firewall logic to raw MoE Router position weights.
-
-        Parameters
-        ----------
-        market_features : np.ndarray
-            Live market observation window.  Shape: ``[W, F]``.
-        raw_weights : np.ndarray
-            Position weights from MoE Router.  Shape: ``[N_assets]``.
-        market : str
-            Market identifier.
-
-        Returns
-        -------
-        FirewallDecision
-            Full audit record including adjusted weights.
-        """
+        """Apply firewall logic to raw MoE Router position weights."""
         with self._lock:
             if market not in self._is_fitted or not self._is_fitted[market]:
                 raise RuntimeError(
                     f"IntelligentRiskFirewall [{market}] not fitted. Call .fit() first."
                 )
 
+            # [FUSE 1 & 3] 絕命防禦：空資料、NaN 與 Inf 檢查
+            if len(market_features) == 0 or len(raw_weights) == 0:
+                logger.error("CRITICAL: 接收到空特徵或空權重陣列！強制進入 EMERGENCY 歸零。")
+                return self._create_emergency_decision(raw_weights, "Empty input arrays")
+                
+            if np.any(np.isnan(market_features)) or np.any(np.isinf(market_features)):
+                logger.error("CRITICAL: 特徵陣列遭 NaN/Inf 污染！強制進入 EMERGENCY 歸零。")
+                return self._create_emergency_decision(raw_weights, "NaN/Inf in market_features")
+                
+            if np.any(np.isnan(raw_weights)) or np.any(np.isinf(raw_weights)):
+                logger.error("CRITICAL: 權重陣列遭 NaN/Inf 污染！強制進入 EMERGENCY 歸零。")
+                return self._create_emergency_decision(raw_weights, "NaN/Inf in raw_weights")
+
             # 1. Run detectors (針對指定市場)
-            hmm_pred   = self.hmm_detectors[market].predict(market_features)
-            ood_result = self.ood_detectors[market].detect(market_features[-1:])
+            try:
+                hmm_pred   = self.hmm_detectors[market].predict(market_features)
+                ood_result = self.ood_detectors[market].detect(market_features[-1:])
+            except Exception as e:
+                logger.error("CRITICAL: 偵測模型崩潰: %s！強制進入 EMERGENCY 歸零。", e)
+                return self._create_emergency_decision(raw_weights, f"Detector Exception: {str(e)}")
 
             # 2. Resolve risk tier
             tier, reason = self._resolve_tier(hmm_pred, ood_result)
 
             # Edge Case #45: 融資斷頭多殺多 (Margin Call Cascade)
             if market == "TW" and margin_ratio is not None and margin_ratio < 1.30:
-                logger.warning("Edge Case #45: 偵測到融資斷頭潮 (維持率 %.2f < 130%%). 啟動反轉撿屍邏輯.", margin_ratio)
-                if tier in (RiskTier.EMERGENCY, RiskTier.WARNING):
+                logger.warning("Edge Case #45: 偵測到融資斷頭潮 (維持率 %.2f < 130%%). 評估反轉邏輯.", margin_ratio)
+                if tier == RiskTier.EMERGENCY:
+                    # 【鐵律】核爆級 EMERGENCY 絕對不可被 Override
+                    logger.critical("🚨 拒絕抄底：當前為 EMERGENCY 核爆級風險，防火牆絕對否決！死守現金！")
+                elif tier == RiskTier.WARNING:
                     tier = RiskTier.CAUTION
                     reason += " [OVERRIDE: MARGIN CALL CASCADE - BUY THE DIP]"
 
+            # Phase 3: Staggered De-risking & State Tracking
+            state = self.shock_state.get(market, {"days_in_shock": 0, "days_safe": 0, "last_scale_factor": 1.0})
+            h_extreme = hmm_pred.danger_probability
+
+            if h_extreme > 0.78:
+                state["days_in_shock"] += 1
+                state["days_safe"] = 0
+            else:
+                state["days_safe"] += 1
+                state["days_in_shock"] = 0
+
             # 3. Compute scale factor
-            scale = self._compute_scale_factor(
+            raw_scale = self._compute_scale_factor(
                 tier, hmm_pred.danger_probability, hmm_pred.bear_probability, ood_result.combined_anomaly_score
             )
+
+            # Override for Phase 3 logic
+            if h_extreme > 0.90:
+                scale = self.config.emergency_scale
+                reason += " [Staggered: 100% De-risk]"
+            elif h_extreme > 0.78:
+                scale = 0.5
+                reason += " [Staggered: 50% De-risk]"
+            else:
+                scale = raw_scale
+                
+            # Time-Decay Lock Logic
+            if h_extreme <= 0.78 and state["days_safe"] > 0:
+                if state["days_safe"] < 3:
+                    scale = min(scale, state["last_scale_factor"])
+                    reason += f" [Cooldown Lock: days_safe={state['days_safe']}/3]"
+                else:
+                    # Step-wise unlock: 3-4 days -> 0.3, 5-6 days -> 0.6, >=7 days -> 1.0
+                    if state["days_safe"] < 5:
+                        max_scale = max(state["last_scale_factor"], 0.3)
+                        scale = min(scale, max_scale)
+                        reason += f" [Cooldown Unlock Stage 1: max {max_scale}]"
+                    elif state["days_safe"] < 7:
+                        max_scale = max(state["last_scale_factor"], 0.6)
+                        scale = min(scale, max_scale)
+                        reason += f" [Cooldown Unlock Stage 2: max {max_scale}]"
+
+            state["last_scale_factor"] = float(scale)
+            self.shock_state[market] = state
 
             # 4. Apply scaling
             adjusted_weights = raw_weights * scale
 
+            # [FUSE 2] 強制槓桿上限與極端值裁剪 (Hard Leverage Bounds)
+            # 防止優化器失控傳入巨大數值 (e.g. 1000.0) 導致爆倉
+            adjusted_weights = np.clip(adjusted_weights, -1.0, 1.0)
+            
+            # 若總槓桿（絕對值總和）超過 2.0 (最大允許總槓桿)，強制依比例縮小
+            total_leverage = np.sum(np.abs(adjusted_weights))
+            if total_leverage > 2.0:
+                logger.warning("CRITICAL: 總槓桿 %.2f 異常超過 2.0 上限！強制等比例縮放 (De-leveraging).", total_leverage)
+                adjusted_weights = (adjusted_weights / total_leverage) * 2.0
+
             log_fn = logger.warning if tier != RiskTier.GREEN else logger.info
             log_fn(
                 "[Firewall] tier=%s  scale=%.4f  hmm_extreme=%.3f  hmm_bear=%.3f  "
-                "ood_score=%.3f  reason=%s",
+                "ood_score=%.3f  days_in_shock=%d  days_safe=%d  reason=%s",
                 tier.name, scale,
                 hmm_pred.danger_probability,
                 hmm_pred.bear_probability,
                 ood_result.combined_anomaly_score,
+                state["days_in_shock"],
+                state["days_safe"],
                 reason,
             )
 
@@ -478,6 +561,8 @@ class IntelligentRiskFirewall:
                 hmm_regime_label=hmm_pred.regime_label,
                 ood_is_flagged=ood_result.is_ood,
                 veto_reason=reason,
+                days_in_shock=state["days_in_shock"],
+                days_safe=state["days_safe"],
             )
 
 

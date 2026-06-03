@@ -547,22 +547,14 @@ class FutuBroker(BrokerBase):
             return []
 
         results: list[OrderResult] = []
-        ctx = None
+        from nexus_quant_os.alpha_hunter.order_slicer import SmartOrderSlicer
 
-        try:
-            ctx = self._get_trade_ctx()
+        # Pre-fetch all prices in one batch
+        all_symbols = [intent.symbol for intent in intents]
+        prices_dict = self._get_prices(all_symbols)
 
-            # Pre-fetch all prices in one batch
-            all_symbols = [intent.symbol for intent in intents]
-            prices_dict = self._get_prices(all_symbols)
-
-            for intent in intents:
-                futu_code = self._to_futu_code(intent.symbol)
-                side = (
-                    TrdSide.BUY if intent.side == "BUY"
-                    else TrdSide.SELL
-                )
-
+        for intent in intents:
+            try:
                 # Get current price for the limit order
                 price = prices_dict.get(intent.symbol)
                 if price is None or price <= 0:
@@ -582,90 +574,44 @@ class FutuBroker(BrokerBase):
                     ))
                     continue
 
-                # Ensure integer quantity (US equities)
-                qty = max(1, int(intent.qty))
-
-                logger.info(
-                    "Placing %s order: %s x%d @ $%.2f (SIMULATE)",
-                    intent.side, intent.symbol, qty, price,
-                )
-
-                # ── Place the order ───────────────────────────────
-                # Use MARKET order for simulation to ensure fills.
-                # Some Moomoo simulate environments only support
-                # NORMAL (limit) — fallback if MARKET fails.
-                ret, data = ctx.place_order(
-                    price=price,
-                    qty=qty,
-                    code=futu_code,
-                    trd_side=side,
-                    order_type=OrderType.NORMAL,
-                    trd_env=self._TRD_ENV,  # ALWAYS SIMULATE
-                )
-
-                if ret == RET_OK:
-                    order_id = str(data.iloc[0].get("order_id", ""))
-                    logger.info(
-                        "Order SUBMITTED: %s %s x%d — order_id=%s",
-                        intent.side, intent.symbol, qty, order_id,
-                    )
+                # 🛡️ 裝甲：胖手指絕對上限 (10萬美金)
+                notional = price * intent.qty
+                MAX_NOTIONAL_USD = 100_000.0  
+                if notional > MAX_NOTIONAL_USD:
+                    logger.critical("🛑 [胖手指攔截] %s 委託總價 $%.2f 超出硬上限！已強行拒絕送單。", intent.symbol, notional)
                     results.append(OrderResult(
-                        symbol=intent.symbol,
-                        side=intent.side,
-                        qty=float(qty),
-                        filled_price=0.0,
-                        commission=0.0,  # Moomoo simulate has no commission
-                        timestamp=datetime.now(timezone.utc),
-                        order_id=order_id,
-                        status="SUBMITTED",
+                        symbol=intent.symbol, side=intent.side, qty=intent.qty, filled_price=0.0,
+                        commission=0.0, timestamp=datetime.now(timezone.utc),
+                        order_id="FAT_FINGER_REJECTED", status="REJECTED"
                     ))
-                else:
-                    error_msg = str(data)
-                    logger.error(
-                        "Order REJECTED: %s %s x%d — %s",
-                        intent.side, intent.symbol, qty, error_msg,
-                    )
-                    results.append(OrderResult(
-                        symbol=intent.symbol,
-                        side=intent.side,
-                        qty=float(qty),
-                        filled_price=0.0,
-                        commission=0.0,
-                        timestamp=datetime.now(timezone.utc),
-                        order_id=f"REJECTED_{error_msg[:50]}",
-                        status="REJECTED",
-                    ))
+                    continue
 
-                # Rate limit: Moomoo has a 30 req/30s limit
-                time.sleep(1.0)
-
-        except Exception as exc:
-            logger.error("Execute failed: %s", exc)
-            # Mark remaining intents as cancelled
-            executed_symbols = {r.symbol for r in results}
-            for intent in intents:
-                if intent.symbol not in executed_symbols:
-                    results.append(OrderResult(
-                        symbol=intent.symbol,
-                        side=intent.side,
-                        qty=intent.qty,
-                        filled_price=0.0,
-                        commission=0.0,
-                        timestamp=datetime.now(timezone.utc),
-                        order_id="ERROR",
-                        status="CANCELLED",
-                    ))
-            submitted_orders = [r for r in results if r.status == "SUBMITTED"]
-            if submitted_orders:
-                logger.error(
-                    "PARTIAL FAILURE: %d orders already submitted before error. "
-                    "Manual reconciliation required. Symbols: %s",
-                    len(submitted_orders),
-                    [o.symbol for o in submitted_orders],
+                sliced_results = SmartOrderSlicer.execute_sliced_order(
+                    broker=self,
+                    intent=intent,
+                    market="US",
+                    slippage_threshold=0.005,
+                    timeout_seconds=60,
                 )
-        finally:
-            if ctx is not None:
-                ctx.close()
+                results.extend(sliced_results)
+
+            except Exception as exc:
+                logger.error("Execute failed for %s: %s", intent.symbol, exc)
+                results.append(OrderResult(
+                    symbol=intent.symbol, side=intent.side, qty=intent.qty, filled_price=0.0,
+                    commission=0.0, timestamp=datetime.now(timezone.utc),
+                    order_id="ERROR", status="CANCELLED"
+                ))
+
+        # 檢查是否有任何剛送出的 SUBMITTED 訂單
+        submitted_orders = [r for r in results if r.status == "SUBMITTED"]
+        if submitted_orders:
+            logger.error(
+                "PARTIAL FAILURE: %d orders still SUBMITTED. "
+                "Manual reconciliation required. Symbols: %s",
+                len(submitted_orders),
+                [o.symbol for o in submitted_orders],
+            )
 
         return results
 
